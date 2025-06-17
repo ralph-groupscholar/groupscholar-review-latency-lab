@@ -29,20 +29,25 @@ type StageConfig struct {
 }
 
 type Application struct {
-	ID           int
-	ArrivalDay   int
-	StageIndex   int
-	Remaining    int
-	CompletedDay int
+	ID              int
+	ArrivalDay      int
+	StageIndex      int
+	StageEnteredDay int
+	Remaining       int
+	CompletedDay    int
 }
 
 type StageState struct {
-	Config       StageConfig
-	Queue        []*Application
-	InProgress   []*Application
-	QueueSum     int
-	ActiveSum    int
-	CompletedSum int
+	Config        StageConfig
+	Queue         []*Application
+	InProgress    []*Application
+	QueueSum      int
+	ActiveSum     int
+	CompletedSum  int
+	QueueDays     int
+	ActiveDays    int
+	QueueSamples  []int
+	ActiveSamples []int
 }
 
 type Report struct {
@@ -57,11 +62,13 @@ type Report struct {
 	StageSummaries    []StageSummary    `json:"stage_summaries"`
 	BacklogHighlights BacklogHighlights `json:"backlog_highlights"`
 	RiskSummary       RiskSummary       `json:"risk_summary"`
+	ConstraintSummary ConstraintSummary `json:"constraint_summary"`
 }
 
 type StageSummary struct {
 	Name              string  `json:"name"`
 	Capacity          int     `json:"capacity_per_day"`
+	MaxDays           int     `json:"max_days"`
 	AverageQueue      float64 `json:"average_queue"`
 	AverageActive     float64 `json:"average_active"`
 	Utilization       float64 `json:"utilization_rate"`
@@ -69,8 +76,14 @@ type StageSummary struct {
 	Pressure          string  `json:"pressure"`
 	WIP               int     `json:"wip"`
 	AverageAgeDays    float64 `json:"average_age_days"`
+	OldestAgeDays     int     `json:"oldest_age_days"`
 	OverdueWIP        int     `json:"overdue_wip"`
 	NearDueWIP        int     `json:"near_due_wip"`
+	QueueDaysPct      float64 `json:"queue_days_pct"`
+	ActiveDaysPct     float64 `json:"active_days_pct"`
+	QueueVolatility   float64 `json:"queue_volatility"`
+	FlowEfficiency    float64 `json:"flow_efficiency"`
+	ThroughputPerDay  float64 `json:"throughput_per_day"`
 }
 
 type BacklogHighlights struct {
@@ -85,6 +98,16 @@ type RiskSummary struct {
 	OverdueCompleted  int     `json:"overdue_completed"`
 	OverdueWIP        int     `json:"overdue_wip"`
 	NearDueWIP        int     `json:"near_due_wip"`
+}
+
+type ConstraintSummary struct {
+	Stage             string  `json:"stage"`
+	ArrivalRatePerDay int     `json:"arrival_rate_per_day"`
+	ThroughputPerDay  float64 `json:"throughput_per_day"`
+	ThroughputGap     float64 `json:"throughput_gap"`
+	Utilization       float64 `json:"utilization_rate"`
+	AverageQueue      float64 `json:"average_queue"`
+	Recommendation    string  `json:"recommendation"`
 }
 
 const sampleConfig = `{
@@ -215,7 +238,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 	for day := 1; day <= cfg.HorizonDays; day++ {
 		for i := 0; i < cfg.ArrivalRatePerDay; i++ {
 			idCounter++
-			app := &Application{ID: idCounter, ArrivalDay: day, StageIndex: 0}
+			app := &Application{ID: idCounter, ArrivalDay: day, StageIndex: 0, StageEnteredDay: day}
 			applications = append(applications, app)
 			stages[0].Queue = append(stages[0].Queue, app)
 		}
@@ -236,6 +259,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 					completedDurations = append(completedDurations, cycle)
 				} else {
 					app.StageIndex = idx + 1
+					app.StageEnteredDay = day
 					stages[idx+1].Queue = append(stages[idx+1].Queue, app)
 				}
 			}
@@ -256,6 +280,14 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 
 			stage.QueueSum += len(stage.Queue)
 			stage.ActiveSum += len(stage.InProgress)
+			stage.QueueSamples = append(stage.QueueSamples, len(stage.Queue))
+			stage.ActiveSamples = append(stage.ActiveSamples, len(stage.InProgress))
+			if len(stage.Queue) > 0 {
+				stage.QueueDays++
+			}
+			if len(stage.InProgress) > 0 {
+				stage.ActiveDays++
+			}
 		}
 	}
 
@@ -295,10 +327,15 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		}
 		wip := len(stage.Queue) + len(stage.InProgress)
 		wipTotal += wip
-		avgAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays, cfg.TargetCycleDays, cfg.NearDueWindowDays)
+		avgAge, oldestAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays)
+		flowEfficiency := 0.0
+		if avgQueue+avgActive > 0 {
+			flowEfficiency = avgActive / (avgQueue + avgActive)
+		}
 		summary := StageSummary{
 			Name:              stage.Config.Name,
 			Capacity:          stage.Config.CapacityPerDay,
+			MaxDays:           stage.Config.MaxDays,
 			AverageQueue:      round(avgQueue, 2),
 			AverageActive:     round(avgActive, 2),
 			Utilization:       round(utilization, 2),
@@ -306,8 +343,14 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			Pressure:          classifyPressure(utilization, estimatedWait),
 			WIP:               wip,
 			AverageAgeDays:    round(avgAge, 2),
+			OldestAgeDays:     oldestAge,
 			OverdueWIP:        overdueWIP,
 			NearDueWIP:        nearDueWIP,
+			QueueDaysPct:      round(float64(stage.QueueDays)/float64(cfg.HorizonDays), 3),
+			ActiveDaysPct:     round(float64(stage.ActiveDays)/float64(cfg.HorizonDays), 3),
+			QueueVolatility:   round(stdDev(stage.QueueSamples), 2),
+			FlowEfficiency:    round(flowEfficiency, 3),
+			ThroughputPerDay:  round(float64(stage.CompletedSum)/float64(cfg.HorizonDays), 2),
 		}
 		stageSummaries = append(stageSummaries, summary)
 		if summary.AverageQueue > topQueue.AverageQueue {
@@ -319,6 +362,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 	}
 
 	riskSummary := buildRiskSummary(cfg, completed, apps)
+	constraintSummary := buildConstraintSummary(cfg, stageSummaries)
 
 	return Report{
 		HorizonDays:       cfg.HorizonDays,
@@ -332,6 +376,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		StageSummaries:    stageSummaries,
 		BacklogHighlights: BacklogHighlights{TopAverageQueue: topQueue.Name, TopWIP: topWIP.Name},
 		RiskSummary:       riskSummary,
+		ConstraintSummary: constraintSummary,
 	}
 }
 
@@ -372,34 +417,83 @@ func buildRiskSummary(cfg Config, completed []int, apps []*Application) RiskSumm
 	return risk
 }
 
-func computeStageAging(stage *StageState, horizonDays int, targetCycle int, nearWindow int) (float64, int, int) {
+func buildConstraintSummary(cfg Config, stages []StageSummary) ConstraintSummary {
+	summary := ConstraintSummary{ArrivalRatePerDay: cfg.ArrivalRatePerDay}
+	if len(stages) == 0 {
+		return summary
+	}
+
+	bestGap := -1e9
+	var gapStage StageSummary
+	bestUtil := -1.0
+	var utilStage StageSummary
+	for _, stage := range stages {
+		gap := float64(cfg.ArrivalRatePerDay) - stage.ThroughputPerDay
+		if gap > bestGap {
+			bestGap = gap
+			gapStage = stage
+		}
+		if stage.Utilization > bestUtil {
+			bestUtil = stage.Utilization
+			utilStage = stage
+		}
+	}
+
+	chosen := utilStage
+	if bestGap > 0.1 {
+		chosen = gapStage
+	}
+
+	gap := float64(cfg.ArrivalRatePerDay) - chosen.ThroughputPerDay
+	recommendation := "Maintain current capacity; monitor volatility."
+	if gap > 0.1 {
+		recommendation = "Increase capacity or reduce service time at this stage."
+	}
+
+	return ConstraintSummary{
+		Stage:             chosen.Name,
+		ArrivalRatePerDay: cfg.ArrivalRatePerDay,
+		ThroughputPerDay:  round(chosen.ThroughputPerDay, 2),
+		ThroughputGap:     round(gap, 2),
+		Utilization:       round(chosen.Utilization, 2),
+		AverageQueue:      round(chosen.AverageQueue, 2),
+		Recommendation:    recommendation,
+	}
+}
+
+func computeStageAging(stage *StageState, horizonDays int) (float64, int, int, int) {
 	totalAge := 0
 	count := 0
+	oldest := 0
 	overdue := 0
 	nearDue := 0
+	nearWindow := 1
 	apps := append([]*Application{}, stage.Queue...)
 	apps = append(apps, stage.InProgress...)
 	for _, app := range apps {
-		age := horizonDays - app.ArrivalDay + 1
+		age := horizonDays - app.StageEnteredDay + 1
 		if age < 0 {
 			continue
 		}
 		totalAge += age
 		count++
-		if targetCycle > 0 {
-			if age > targetCycle {
+		if age > oldest {
+			oldest = age
+		}
+		if stage.Config.MaxDays > 0 {
+			if age > stage.Config.MaxDays {
 				overdue++
 				continue
 			}
-			if targetCycle-age <= nearWindow {
+			if stage.Config.MaxDays-age <= nearWindow {
 				nearDue++
 			}
 		}
 	}
 	if count == 0 {
-		return 0, overdue, nearDue
+		return 0, oldest, overdue, nearDue
 	}
-	return float64(totalAge) / float64(count), overdue, nearDue
+	return float64(totalAge) / float64(count), oldest, overdue, nearDue
 }
 
 func computePercentiles(values []int, percentiles []int) map[string]int {
@@ -463,10 +557,18 @@ func printReport(report Report) {
 		fmt.Printf("WIP risk: %d overdue, %d near due (<=%d days to target)\n",
 			report.RiskSummary.OverdueWIP, report.RiskSummary.NearDueWIP, report.RiskSummary.NearDueWindowDays)
 	}
+	if report.ConstraintSummary.Stage != "" {
+		fmt.Printf("Constraint focus: %s | gap %.2f/day | util %.2f | avg queue %.2f\n",
+			report.ConstraintSummary.Stage,
+			report.ConstraintSummary.ThroughputGap,
+			report.ConstraintSummary.Utilization,
+			report.ConstraintSummary.AverageQueue)
+		fmt.Printf("Recommendation: %s\n", report.ConstraintSummary.Recommendation)
+	}
 	fmt.Println()
 	fmt.Println("Stage detail")
 	for _, stage := range report.StageSummaries {
-		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | util %.2f | est wait %.2f days | pressure %s | wip %d | avg age %.2f days",
+		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | util %.2f | est wait %.2f days | pressure %s | wip %d | avg age %.2f days | oldest %d days | stage max %d days",
 			stage.Name,
 			stage.Capacity,
 			stage.AverageQueue,
@@ -476,10 +578,10 @@ func printReport(report Report) {
 			stage.Pressure,
 			stage.WIP,
 			stage.AverageAgeDays,
+			stage.OldestAgeDays,
+			stage.MaxDays,
 		)
-		if report.RiskSummary.TargetCycleDays > 0 {
-			line = fmt.Sprintf("%s | overdue %d | near due %d", line, stage.OverdueWIP, stage.NearDueWIP)
-		}
+		line = fmt.Sprintf("%s | overdue %d | near due %d", line, stage.OverdueWIP, stage.NearDueWIP)
 		fmt.Println(line)
 	}
 	fmt.Println()

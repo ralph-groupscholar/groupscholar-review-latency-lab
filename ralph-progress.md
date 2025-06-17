@@ -7,3 +7,11 @@
 ## Iteration 2
 - Added stage aging metrics (average age, overdue, near-due WIP) to the JSON and text reports.
 - Documented stage-level aging risk signals in the README feature list.
+
+## Iteration 2
+- Added stage-entry tracking to compute in-stage aging, oldest item age, and stage SLA risk.
+- Updated report output and JSON schema to include stage max days and overdue/near-due counts.
+
+## Iteration 3
+- Added constraint-stage summary that highlights throughput gaps versus arrivals and the highest-utilization stage.
+- Extended text and JSON reports with a focused capacity recommendation for the constraint stage.
