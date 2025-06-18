@@ -41,11 +41,14 @@ type StageState struct {
 	Config        StageConfig
 	Queue         []*Application
 	InProgress    []*Application
+	ArrivalSum    int
 	QueueSum      int
 	ActiveSum     int
 	CompletedSum  int
 	QueueDays     int
 	ActiveDays    int
+	QueuePeak     int
+	ActivePeak    int
 	QueueSamples  []int
 	ActiveSamples []int
 }
@@ -84,11 +87,19 @@ type StageSummary struct {
 	QueueVolatility   float64 `json:"queue_volatility"`
 	FlowEfficiency    float64 `json:"flow_efficiency"`
 	ThroughputPerDay  float64 `json:"throughput_per_day"`
+	BacklogDays       float64 `json:"backlog_days"`
+	BacklogBlocked    bool    `json:"backlog_blocked"`
+	ArrivalsPerDay    float64 `json:"arrivals_per_day"`
+	NetFlowPerDay     float64 `json:"net_flow_per_day"`
+	FlowBalance       string  `json:"flow_balance"`
+	QueuePeak         int     `json:"queue_peak"`
+	ActivePeak        int     `json:"active_peak"`
 }
 
 type BacklogHighlights struct {
 	TopAverageQueue string `json:"top_average_queue"`
 	TopWIP          string `json:"top_wip"`
+	TopBacklogDays  string `json:"top_backlog_days"`
 }
 
 type RiskSummary struct {
@@ -241,6 +252,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 			app := &Application{ID: idCounter, ArrivalDay: day, StageIndex: 0, StageEnteredDay: day}
 			applications = append(applications, app)
 			stages[0].Queue = append(stages[0].Queue, app)
+			stages[0].ArrivalSum++
 		}
 
 		for idx, stage := range stages {
@@ -261,6 +273,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 					app.StageIndex = idx + 1
 					app.StageEnteredDay = day
 					stages[idx+1].Queue = append(stages[idx+1].Queue, app)
+					stages[idx+1].ArrivalSum++
 				}
 			}
 			stage.InProgress = stillWorking
@@ -288,6 +301,12 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 			if len(stage.InProgress) > 0 {
 				stage.ActiveDays++
 			}
+			if len(stage.Queue) > stage.QueuePeak {
+				stage.QueuePeak = len(stage.Queue)
+			}
+			if len(stage.InProgress) > stage.ActivePeak {
+				stage.ActivePeak = len(stage.InProgress)
+			}
 		}
 	}
 
@@ -314,6 +333,8 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 	wipTotal := 0
 	var topQueue StageSummary
 	var topWIP StageSummary
+	var topBacklog StageSummary
+	topBacklogScore := -1.0
 	for _, stage := range stages {
 		avgQueue := float64(stage.QueueSum) / float64(cfg.HorizonDays)
 		avgActive := float64(stage.ActiveSum) / float64(cfg.HorizonDays)
@@ -331,6 +352,19 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		flowEfficiency := 0.0
 		if avgQueue+avgActive > 0 {
 			flowEfficiency = avgActive / (avgQueue + avgActive)
+		}
+		backlogBlocked := false
+		backlogDays := 0.0
+		backlogScore := 0.0
+		throughputPerDay := float64(stage.CompletedSum) / float64(cfg.HorizonDays)
+		arrivalsPerDay := float64(stage.ArrivalSum) / float64(cfg.HorizonDays)
+		netFlow := arrivalsPerDay - throughputPerDay
+		if throughputPerDay > 0 {
+			backlogDays = float64(wip) / throughputPerDay
+			backlogScore = backlogDays
+		} else if wip > 0 {
+			backlogBlocked = true
+			backlogScore = math.Inf(1)
 		}
 		summary := StageSummary{
 			Name:              stage.Config.Name,
@@ -350,7 +384,14 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			ActiveDaysPct:     round(float64(stage.ActiveDays)/float64(cfg.HorizonDays), 3),
 			QueueVolatility:   round(stdDev(stage.QueueSamples), 2),
 			FlowEfficiency:    round(flowEfficiency, 3),
-			ThroughputPerDay:  round(float64(stage.CompletedSum)/float64(cfg.HorizonDays), 2),
+			ThroughputPerDay:  round(throughputPerDay, 2),
+			BacklogDays:       round(backlogDays, 2),
+			BacklogBlocked:    backlogBlocked,
+			ArrivalsPerDay:    round(arrivalsPerDay, 2),
+			NetFlowPerDay:     round(netFlow, 2),
+			FlowBalance:       classifyFlowBalance(netFlow),
+			QueuePeak:         stage.QueuePeak,
+			ActivePeak:        stage.ActivePeak,
 		}
 		stageSummaries = append(stageSummaries, summary)
 		if summary.AverageQueue > topQueue.AverageQueue {
@@ -358,6 +399,10 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		}
 		if summary.WIP > topWIP.WIP {
 			topWIP = summary
+		}
+		if backlogScore > topBacklogScore {
+			topBacklogScore = backlogScore
+			topBacklog = summary
 		}
 	}
 
@@ -374,7 +419,11 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		Percentiles:       percentiles,
 		WIPTotal:          wipTotal,
 		StageSummaries:    stageSummaries,
-		BacklogHighlights: BacklogHighlights{TopAverageQueue: topQueue.Name, TopWIP: topWIP.Name},
+		BacklogHighlights: BacklogHighlights{
+			TopAverageQueue: topQueue.Name,
+			TopWIP:          topWIP.Name,
+			TopBacklogDays:  topBacklog.Name,
+		},
 		RiskSummary:       riskSummary,
 		ConstraintSummary: constraintSummary,
 	}
