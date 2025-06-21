@@ -66,6 +66,7 @@ type Report struct {
 	BacklogHighlights BacklogHighlights `json:"backlog_highlights"`
 	RiskSummary       RiskSummary       `json:"risk_summary"`
 	ConstraintSummary ConstraintSummary `json:"constraint_summary"`
+	ActionQueue       []ActionItem      `json:"action_queue"`
 }
 
 type StageSummary struct {
@@ -119,6 +120,13 @@ type ConstraintSummary struct {
 	Utilization       float64 `json:"utilization_rate"`
 	AverageQueue      float64 `json:"average_queue"`
 	Recommendation    string  `json:"recommendation"`
+}
+
+type ActionItem struct {
+	Stage          string   `json:"stage"`
+	Score          float64  `json:"score"`
+	Signals        []string `json:"signals"`
+	Recommendation string   `json:"recommendation"`
 }
 
 const sampleConfig = `{
@@ -408,6 +416,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 
 	riskSummary := buildRiskSummary(cfg, completed, apps)
 	constraintSummary := buildConstraintSummary(cfg, stageSummaries)
+	actionQueue := buildActionQueue(stageSummaries)
 
 	return Report{
 		HorizonDays:       cfg.HorizonDays,
@@ -426,6 +435,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		},
 		RiskSummary:       riskSummary,
 		ConstraintSummary: constraintSummary,
+		ActionQueue:       actionQueue,
 	}
 }
 
@@ -510,6 +520,72 @@ func buildConstraintSummary(cfg Config, stages []StageSummary) ConstraintSummary
 	}
 }
 
+func buildActionQueue(stages []StageSummary) []ActionItem {
+	if len(stages) == 0 {
+		return nil
+	}
+
+	items := make([]ActionItem, 0, len(stages))
+	for _, stage := range stages {
+		score := float64(stage.OverdueWIP*3+stage.NearDueWIP*2) + maxFloat(stage.NetFlowPerDay, 0)*5
+		score += stage.BacklogDays + stage.Utilization*4 + stage.QueueVolatility*0.5
+		if stage.BacklogBlocked {
+			score += 10
+		}
+
+		signals := make([]string, 0, 6)
+		if stage.OverdueWIP > 0 {
+			signals = append(signals, "overdue_wip")
+		}
+		if stage.NearDueWIP > 0 {
+			signals = append(signals, "near_due_wip")
+		}
+		if stage.NetFlowPerDay > 0.2 {
+			signals = append(signals, "arrival_exceeds_throughput")
+		}
+		if stage.BacklogBlocked {
+			signals = append(signals, "backlog_blocked")
+		}
+		if stage.Utilization >= 0.9 {
+			signals = append(signals, "high_utilization")
+		}
+		if stage.QueueVolatility >= 3 {
+			signals = append(signals, "volatile_queue")
+		}
+		if stage.BacklogDays >= 5 {
+			signals = append(signals, "backlog_days_high")
+		}
+		if len(signals) == 0 {
+			signals = append(signals, "monitor")
+		}
+
+		recommendation := "Monitor"
+		if stage.BacklogBlocked || stage.NetFlowPerDay > 0.5 {
+			recommendation = "Increase capacity or reduce service time"
+		} else if stage.OverdueWIP > 0 {
+			recommendation = "Expedite overdue items"
+		} else if stage.NearDueWIP > 0 {
+			recommendation = "Prioritize near-due work"
+		}
+
+		items = append(items, ActionItem{
+			Stage:          stage.Name,
+			Score:          round(score, 2),
+			Signals:        signals,
+			Recommendation: recommendation,
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Score > items[j].Score
+	})
+
+	if len(items) > 3 {
+		items = items[:3]
+	}
+	return items
+}
+
 func computeStageAging(stage *StageState, horizonDays int) (float64, int, int, int) {
 	totalAge := 0
 	count := 0
@@ -578,6 +654,13 @@ func round(value float64, precision int) float64 {
 	return math.Round(value*factor) / factor
 }
 
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func classifyPressure(utilization float64, estimatedWait float64) string {
 	switch {
 	case utilization >= 0.9 || estimatedWait >= 2:
@@ -613,6 +696,17 @@ func printReport(report Report) {
 			report.ConstraintSummary.Utilization,
 			report.ConstraintSummary.AverageQueue)
 		fmt.Printf("Recommendation: %s\n", report.ConstraintSummary.Recommendation)
+	}
+	if len(report.ActionQueue) > 0 {
+		fmt.Println("Action queue")
+		for _, item := range report.ActionQueue {
+			fmt.Printf("- %s | score %.2f | signals %s | %s\n",
+				item.Stage,
+				item.Score,
+				strings.Join(item.Signals, ", "),
+				item.Recommendation,
+			)
+		}
 	}
 	fmt.Println()
 	fmt.Println("Stage detail")

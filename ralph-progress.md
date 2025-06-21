@@ -15,3 +15,7 @@
 ## Iteration 3
 - Added constraint-stage summary that highlights throughput gaps versus arrivals and the highest-utilization stage.
 - Extended text and JSON reports with a focused capacity recommendation for the constraint stage.
+
+## Iteration 4
+- Added an action queue that ranks the top stages by urgency signals and provides recommended interventions.
+- Extended text and JSON outputs with the action queue for quick operational triage.

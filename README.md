@@ -9,6 +9,7 @@ A local-first simulation CLI for exploring scholarship application review throug
 - Cycle-time percentiles, utilization, queue pressure, and backlog summaries
 - Stage aging and near-due risk signals for in-flight work
 - Constraint-stage summary with throughput gap and capacity recommendation
+- Action queue for the top three stages needing attention
 - JSON or text output for briefs and weekly operations updates
 
 ## Quickstart
