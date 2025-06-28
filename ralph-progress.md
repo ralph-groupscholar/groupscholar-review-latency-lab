@@ -19,3 +19,7 @@
 ## Iteration 4
 - Added an action queue that ranks the top stages by urgency signals and provides recommended interventions.
 - Extended text and JSON outputs with the action queue for quick operational triage.
+
+## Iteration 5
+- Added projected SLA risk bands for WIP using min/max remaining service time estimates.
+- Extended text and JSON outputs with projected late counts to flag likely breaches.

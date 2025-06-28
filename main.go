@@ -64,6 +64,7 @@ type Report struct {
 	WIPTotal          int               `json:"wip_total"`
 	StageSummaries    []StageSummary    `json:"stage_summaries"`
 	BacklogHighlights BacklogHighlights `json:"backlog_highlights"`
+	FlowSummary       FlowSummary       `json:"flow_summary"`
 	RiskSummary       RiskSummary       `json:"risk_summary"`
 	ConstraintSummary ConstraintSummary `json:"constraint_summary"`
 	ActionQueue       []ActionItem      `json:"action_queue"`
@@ -103,6 +104,14 @@ type BacklogHighlights struct {
 	TopBacklogDays  string `json:"top_backlog_days"`
 }
 
+type FlowSummary struct {
+	Growing        int    `json:"growing"`
+	Stable         int    `json:"stable"`
+	Draining       int    `json:"draining"`
+	TopGrowthStage string `json:"top_growth_stage"`
+	TopDrainStage  string `json:"top_drain_stage"`
+}
+
 type RiskSummary struct {
 	TargetCycleDays   int     `json:"target_cycle_days"`
 	NearDueWindowDays int     `json:"near_due_window_days"`
@@ -110,6 +119,9 @@ type RiskSummary struct {
 	OverdueCompleted  int     `json:"overdue_completed"`
 	OverdueWIP        int     `json:"overdue_wip"`
 	NearDueWIP        int     `json:"near_due_wip"`
+	ProjectedLateMin  int     `json:"projected_late_min"`
+	ProjectedLateMax  int     `json:"projected_late_max"`
+	ProjectedWIPTotal int     `json:"projected_wip_total"`
 }
 
 type ConstraintSummary struct {
@@ -343,6 +355,9 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 	var topWIP StageSummary
 	var topBacklog StageSummary
 	topBacklogScore := -1.0
+	flowSummary := FlowSummary{}
+	topGrowth := -math.MaxFloat64
+	topDrain := math.MaxFloat64
 	for _, stage := range stages {
 		avgQueue := float64(stage.QueueSum) / float64(cfg.HorizonDays)
 		avgActive := float64(stage.ActiveSum) / float64(cfg.HorizonDays)
@@ -367,6 +382,15 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		throughputPerDay := float64(stage.CompletedSum) / float64(cfg.HorizonDays)
 		arrivalsPerDay := float64(stage.ArrivalSum) / float64(cfg.HorizonDays)
 		netFlow := arrivalsPerDay - throughputPerDay
+		flowBalance := classifyFlowBalance(netFlow)
+		switch flowBalance {
+		case "Growing":
+			flowSummary.Growing++
+		case "Draining":
+			flowSummary.Draining++
+		default:
+			flowSummary.Stable++
+		}
 		if throughputPerDay > 0 {
 			backlogDays = float64(wip) / throughputPerDay
 			backlogScore = backlogDays
@@ -397,7 +421,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			BacklogBlocked:    backlogBlocked,
 			ArrivalsPerDay:    round(arrivalsPerDay, 2),
 			NetFlowPerDay:     round(netFlow, 2),
-			FlowBalance:       classifyFlowBalance(netFlow),
+			FlowBalance:       flowBalance,
 			QueuePeak:         stage.QueuePeak,
 			ActivePeak:        stage.ActivePeak,
 		}
@@ -411,6 +435,14 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		if backlogScore > topBacklogScore {
 			topBacklogScore = backlogScore
 			topBacklog = summary
+		}
+		if netFlow > topGrowth {
+			topGrowth = netFlow
+			flowSummary.TopGrowthStage = summary.Name
+		}
+		if netFlow < topDrain {
+			topDrain = netFlow
+			flowSummary.TopDrainStage = summary.Name
 		}
 	}
 
@@ -433,6 +465,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			TopWIP:          topWIP.Name,
 			TopBacklogDays:  topBacklog.Name,
 		},
+		FlowSummary:       flowSummary,
 		RiskSummary:       riskSummary,
 		ConstraintSummary: constraintSummary,
 		ActionQueue:       actionQueue,
@@ -470,6 +503,20 @@ func buildRiskSummary(cfg Config, completed []int, apps []*Application) RiskSumm
 		}
 		if cfg.TargetCycleDays-age <= cfg.NearDueWindowDays {
 			risk.NearDueWIP++
+		}
+	}
+
+	for _, app := range apps {
+		if app.CompletedDay > 0 {
+			continue
+		}
+		risk.ProjectedWIPTotal++
+		minRemain, maxRemain := remainingServiceDays(cfg.Stages, app)
+		if ageWithRemaining(cfg.HorizonDays, app.ArrivalDay, minRemain) > cfg.TargetCycleDays {
+			risk.ProjectedLateMin++
+		}
+		if ageWithRemaining(cfg.HorizonDays, app.ArrivalDay, maxRemain) > cfg.TargetCycleDays {
+			risk.ProjectedLateMax++
 		}
 	}
 
@@ -621,6 +668,32 @@ func computeStageAging(stage *StageState, horizonDays int) (float64, int, int, i
 	return float64(totalAge) / float64(count), oldest, overdue, nearDue
 }
 
+func remainingServiceDays(stages []StageConfig, app *Application) (int, int) {
+	if app.StageIndex >= len(stages) {
+		return 0, 0
+	}
+	minRemain := 0
+	maxRemain := 0
+	current := stages[app.StageIndex]
+	if app.Remaining > 0 {
+		minRemain += app.Remaining
+		maxRemain += app.Remaining
+	} else {
+		minRemain += current.MinDays
+		maxRemain += current.MaxDays
+	}
+	for i := app.StageIndex + 1; i < len(stages); i++ {
+		minRemain += stages[i].MinDays
+		maxRemain += stages[i].MaxDays
+	}
+	return minRemain, maxRemain
+}
+
+func ageWithRemaining(horizonDays, arrivalDay, remaining int) int {
+	age := horizonDays - arrivalDay + 1
+	return age + remaining
+}
+
 func computePercentiles(values []int, percentiles []int) map[string]int {
 	result := map[string]int{}
 	if len(values) == 0 {
@@ -672,6 +745,17 @@ func classifyPressure(utilization float64, estimatedWait float64) string {
 	}
 }
 
+func classifyFlowBalance(netFlow float64) string {
+	switch {
+	case netFlow > 0.1:
+		return "Growing"
+	case netFlow < -0.1:
+		return "Draining"
+	default:
+		return "Stable"
+	}
+}
+
 func printReport(report Report) {
 	fmt.Println("Group Scholar Review Latency Lab")
 	fmt.Println("--------------------------------")
@@ -688,6 +772,13 @@ func printReport(report Report) {
 			report.RiskSummary.TargetCycleDays, report.RiskSummary.OnTimeRate*100, report.RiskSummary.OverdueCompleted)
 		fmt.Printf("WIP risk: %d overdue, %d near due (<=%d days to target)\n",
 			report.RiskSummary.OverdueWIP, report.RiskSummary.NearDueWIP, report.RiskSummary.NearDueWindowDays)
+		if report.RiskSummary.ProjectedWIPTotal > 0 {
+			fmt.Printf("Projected SLA risk (WIP): >=%d late, up to %d late (of %d)\n",
+				report.RiskSummary.ProjectedLateMin,
+				report.RiskSummary.ProjectedLateMax,
+				report.RiskSummary.ProjectedWIPTotal,
+			)
+		}
 	}
 	if report.ConstraintSummary.Stage != "" {
 		fmt.Printf("Constraint focus: %s | gap %.2f/day | util %.2f | avg queue %.2f\n",
@@ -697,6 +788,13 @@ func printReport(report Report) {
 			report.ConstraintSummary.AverageQueue)
 		fmt.Printf("Recommendation: %s\n", report.ConstraintSummary.Recommendation)
 	}
+	fmt.Printf("Flow balance: %d growing, %d stable, %d draining | top growth %s | top drain %s\n",
+		report.FlowSummary.Growing,
+		report.FlowSummary.Stable,
+		report.FlowSummary.Draining,
+		report.FlowSummary.TopGrowthStage,
+		report.FlowSummary.TopDrainStage,
+	)
 	if len(report.ActionQueue) > 0 {
 		fmt.Println("Action queue")
 		for _, item := range report.ActionQueue {

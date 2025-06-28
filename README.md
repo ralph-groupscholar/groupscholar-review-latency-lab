@@ -8,7 +8,9 @@ A local-first simulation CLI for exploring scholarship application review throug
 - Capacity, service-time, and arrival-rate modeling
 - Cycle-time percentiles, utilization, queue pressure, and backlog summaries
 - Stage aging and near-due risk signals for in-flight work
+- Projected SLA risk bands for in-flight work (min/max remaining service time)
 - Constraint-stage summary with throughput gap and capacity recommendation
+- Flow balance summary that counts growing/stable/draining stages plus top growth/drain stages
 - Action queue for the top three stages needing attention
 - JSON or text output for briefs and weekly operations updates
 
