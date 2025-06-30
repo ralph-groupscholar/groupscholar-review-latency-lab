@@ -722,6 +722,23 @@ func computePercentiles(values []int, percentiles []int) map[string]int {
 	return result
 }
 
+func stdDev(values []int) float64 {
+	if len(values) < 2 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range values {
+		sum += float64(v)
+	}
+	mean := sum / float64(len(values))
+	varianceSum := 0.0
+	for _, v := range values {
+		diff := float64(v) - mean
+		varianceSum += diff * diff
+	}
+	return math.Sqrt(varianceSum / float64(len(values)))
+}
+
 func round(value float64, precision int) float64 {
 	factor := math.Pow(10, float64(precision))
 	return math.Round(value*factor) / factor

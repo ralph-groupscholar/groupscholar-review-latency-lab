@@ -21,5 +21,9 @@
 - Extended text and JSON outputs with the action queue for quick operational triage.
 
 ## Iteration 5
+- Added flow balance classification with growing/stable/draining counts plus top growth/drain stage highlights.
+- Extended text and JSON reports with the new flow balance summary and documented the update.
+
+## Iteration 5
 - Added projected SLA risk bands for WIP using min/max remaining service time estimates.
 - Extended text and JSON outputs with projected late counts to flag likely breaches.
