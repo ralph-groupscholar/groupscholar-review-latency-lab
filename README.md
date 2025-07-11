@@ -12,6 +12,7 @@ A local-first simulation CLI for exploring scholarship application review throug
 - Constraint-stage summary with throughput gap and capacity recommendation
 - Flow balance summary that counts growing/stable/draining stages plus top growth/drain stages
 - Action queue for the top three stages needing attention
+- Stage service-time averages and p90s to gauge processing variability
 - JSON or text output for briefs and weekly operations updates
 
 ## Quickstart

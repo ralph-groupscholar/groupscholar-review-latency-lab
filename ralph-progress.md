@@ -27,3 +27,7 @@
 ## Iteration 5
 - Added projected SLA risk bands for WIP using min/max remaining service time estimates.
 - Extended text and JSON outputs with projected late counts to flag likely breaches.
+
+## Iteration 6
+- Added stage service-time tracking with average and p90 service durations.
+- Extended text/JSON outputs and README to surface processing variability per stage.

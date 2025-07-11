@@ -34,23 +34,27 @@ type Application struct {
 	StageIndex      int
 	StageEnteredDay int
 	Remaining       int
+	ServiceTime     int
 	CompletedDay    int
 }
 
 type StageState struct {
-	Config        StageConfig
-	Queue         []*Application
-	InProgress    []*Application
-	ArrivalSum    int
-	QueueSum      int
-	ActiveSum     int
-	CompletedSum  int
-	QueueDays     int
-	ActiveDays    int
-	QueuePeak     int
-	ActivePeak    int
-	QueueSamples  []int
-	ActiveSamples []int
+	Config         StageConfig
+	Queue          []*Application
+	InProgress     []*Application
+	ArrivalSum     int
+	QueueSum       int
+	ActiveSum      int
+	CompletedSum   int
+	ServiceSum     int
+	ServiceSamples int
+	ServiceTimes   []int
+	QueueDays      int
+	ActiveDays     int
+	QueuePeak      int
+	ActivePeak     int
+	QueueSamples   []int
+	ActiveSamples  []int
 }
 
 type Report struct {
@@ -71,31 +75,33 @@ type Report struct {
 }
 
 type StageSummary struct {
-	Name              string  `json:"name"`
-	Capacity          int     `json:"capacity_per_day"`
-	MaxDays           int     `json:"max_days"`
-	AverageQueue      float64 `json:"average_queue"`
-	AverageActive     float64 `json:"average_active"`
-	Utilization       float64 `json:"utilization_rate"`
-	EstimatedWaitDays float64 `json:"estimated_wait_days"`
-	Pressure          string  `json:"pressure"`
-	WIP               int     `json:"wip"`
-	AverageAgeDays    float64 `json:"average_age_days"`
-	OldestAgeDays     int     `json:"oldest_age_days"`
-	OverdueWIP        int     `json:"overdue_wip"`
-	NearDueWIP        int     `json:"near_due_wip"`
-	QueueDaysPct      float64 `json:"queue_days_pct"`
-	ActiveDaysPct     float64 `json:"active_days_pct"`
-	QueueVolatility   float64 `json:"queue_volatility"`
-	FlowEfficiency    float64 `json:"flow_efficiency"`
-	ThroughputPerDay  float64 `json:"throughput_per_day"`
-	BacklogDays       float64 `json:"backlog_days"`
-	BacklogBlocked    bool    `json:"backlog_blocked"`
-	ArrivalsPerDay    float64 `json:"arrivals_per_day"`
-	NetFlowPerDay     float64 `json:"net_flow_per_day"`
-	FlowBalance       string  `json:"flow_balance"`
-	QueuePeak         int     `json:"queue_peak"`
-	ActivePeak        int     `json:"active_peak"`
+	Name               string  `json:"name"`
+	Capacity           int     `json:"capacity_per_day"`
+	MaxDays            int     `json:"max_days"`
+	AverageQueue       float64 `json:"average_queue"`
+	AverageActive      float64 `json:"average_active"`
+	AverageServiceDays float64 `json:"average_service_days"`
+	ServiceTimeP90     int     `json:"service_time_p90"`
+	Utilization        float64 `json:"utilization_rate"`
+	EstimatedWaitDays  float64 `json:"estimated_wait_days"`
+	Pressure           string  `json:"pressure"`
+	WIP                int     `json:"wip"`
+	AverageAgeDays     float64 `json:"average_age_days"`
+	OldestAgeDays      int     `json:"oldest_age_days"`
+	OverdueWIP         int     `json:"overdue_wip"`
+	NearDueWIP         int     `json:"near_due_wip"`
+	QueueDaysPct       float64 `json:"queue_days_pct"`
+	ActiveDaysPct      float64 `json:"active_days_pct"`
+	QueueVolatility    float64 `json:"queue_volatility"`
+	FlowEfficiency     float64 `json:"flow_efficiency"`
+	ThroughputPerDay   float64 `json:"throughput_per_day"`
+	BacklogDays        float64 `json:"backlog_days"`
+	BacklogBlocked     bool    `json:"backlog_blocked"`
+	ArrivalsPerDay     float64 `json:"arrivals_per_day"`
+	NetFlowPerDay      float64 `json:"net_flow_per_day"`
+	FlowBalance        string  `json:"flow_balance"`
+	QueuePeak          int     `json:"queue_peak"`
+	ActivePeak         int     `json:"active_peak"`
 }
 
 type BacklogHighlights struct {
@@ -285,6 +291,9 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 				}
 
 				stage.CompletedSum++
+				stage.ServiceSum += app.ServiceTime
+				stage.ServiceSamples++
+				stage.ServiceTimes = append(stage.ServiceTimes, app.ServiceTime)
 				if idx == len(stages)-1 {
 					cycle := day - app.ArrivalDay + 1
 					app.CompletedDay = day
@@ -307,6 +316,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 					app := stage.Queue[0]
 					stage.Queue = stage.Queue[1:]
 					app.Remaining = rng.Intn(stage.Config.MaxDays-stage.Config.MinDays+1) + stage.Config.MinDays
+					app.ServiceTime = app.Remaining
 					stage.InProgress = append(stage.InProgress, app)
 				}
 			}
@@ -361,6 +371,12 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 	for _, stage := range stages {
 		avgQueue := float64(stage.QueueSum) / float64(cfg.HorizonDays)
 		avgActive := float64(stage.ActiveSum) / float64(cfg.HorizonDays)
+		avgService := 0.0
+		serviceP90 := 0
+		if stage.ServiceSamples > 0 {
+			avgService = float64(stage.ServiceSum) / float64(stage.ServiceSamples)
+			serviceP90 = computePercentiles(stage.ServiceTimes, []int{90})["p90"]
+		}
 		utilization := 0.0
 		if stage.Config.CapacityPerDay > 0 {
 			utilization = avgActive / float64(stage.Config.CapacityPerDay)
@@ -399,31 +415,33 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			backlogScore = math.Inf(1)
 		}
 		summary := StageSummary{
-			Name:              stage.Config.Name,
-			Capacity:          stage.Config.CapacityPerDay,
-			MaxDays:           stage.Config.MaxDays,
-			AverageQueue:      round(avgQueue, 2),
-			AverageActive:     round(avgActive, 2),
-			Utilization:       round(utilization, 2),
-			EstimatedWaitDays: round(estimatedWait, 2),
-			Pressure:          classifyPressure(utilization, estimatedWait),
-			WIP:               wip,
-			AverageAgeDays:    round(avgAge, 2),
-			OldestAgeDays:     oldestAge,
-			OverdueWIP:        overdueWIP,
-			NearDueWIP:        nearDueWIP,
-			QueueDaysPct:      round(float64(stage.QueueDays)/float64(cfg.HorizonDays), 3),
-			ActiveDaysPct:     round(float64(stage.ActiveDays)/float64(cfg.HorizonDays), 3),
-			QueueVolatility:   round(stdDev(stage.QueueSamples), 2),
-			FlowEfficiency:    round(flowEfficiency, 3),
-			ThroughputPerDay:  round(throughputPerDay, 2),
-			BacklogDays:       round(backlogDays, 2),
-			BacklogBlocked:    backlogBlocked,
-			ArrivalsPerDay:    round(arrivalsPerDay, 2),
-			NetFlowPerDay:     round(netFlow, 2),
-			FlowBalance:       flowBalance,
-			QueuePeak:         stage.QueuePeak,
-			ActivePeak:        stage.ActivePeak,
+			Name:               stage.Config.Name,
+			Capacity:           stage.Config.CapacityPerDay,
+			MaxDays:            stage.Config.MaxDays,
+			AverageQueue:       round(avgQueue, 2),
+			AverageActive:      round(avgActive, 2),
+			AverageServiceDays: round(avgService, 2),
+			ServiceTimeP90:     serviceP90,
+			Utilization:        round(utilization, 2),
+			EstimatedWaitDays:  round(estimatedWait, 2),
+			Pressure:           classifyPressure(utilization, estimatedWait),
+			WIP:                wip,
+			AverageAgeDays:     round(avgAge, 2),
+			OldestAgeDays:      oldestAge,
+			OverdueWIP:         overdueWIP,
+			NearDueWIP:         nearDueWIP,
+			QueueDaysPct:       round(float64(stage.QueueDays)/float64(cfg.HorizonDays), 3),
+			ActiveDaysPct:      round(float64(stage.ActiveDays)/float64(cfg.HorizonDays), 3),
+			QueueVolatility:    round(stdDev(stage.QueueSamples), 2),
+			FlowEfficiency:     round(flowEfficiency, 3),
+			ThroughputPerDay:   round(throughputPerDay, 2),
+			BacklogDays:        round(backlogDays, 2),
+			BacklogBlocked:     backlogBlocked,
+			ArrivalsPerDay:     round(arrivalsPerDay, 2),
+			NetFlowPerDay:      round(netFlow, 2),
+			FlowBalance:        flowBalance,
+			QueuePeak:          stage.QueuePeak,
+			ActivePeak:         stage.ActivePeak,
 		}
 		stageSummaries = append(stageSummaries, summary)
 		if summary.AverageQueue > topQueue.AverageQueue {
@@ -826,11 +844,13 @@ func printReport(report Report) {
 	fmt.Println()
 	fmt.Println("Stage detail")
 	for _, stage := range report.StageSummaries {
-		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | util %.2f | est wait %.2f days | pressure %s | wip %d | avg age %.2f days | oldest %d days | stage max %d days",
+		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | avg service %.2f days | svc p90 %d days | util %.2f | est wait %.2f days | pressure %s | wip %d | avg age %.2f days | oldest %d days | stage max %d days",
 			stage.Name,
 			stage.Capacity,
 			stage.AverageQueue,
 			stage.AverageActive,
+			stage.AverageServiceDays,
+			stage.ServiceTimeP90,
 			stage.Utilization,
 			stage.EstimatedWaitDays,
 			stage.Pressure,
