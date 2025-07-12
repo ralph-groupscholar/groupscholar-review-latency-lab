@@ -5,14 +5,14 @@ A local-first simulation CLI for exploring scholarship application review throug
 ## Features
 
 - Discrete day simulation of multi-stage review pipelines
-- Capacity, service-time, and arrival-rate modeling
+- Capacity, service-time, and arrival-rate modeling (fixed or Poisson)
 - Cycle-time percentiles, utilization, queue pressure, and backlog summaries
 - Stage aging and near-due risk signals for in-flight work
 - Projected SLA risk bands for in-flight work (min/max remaining service time)
 - Constraint-stage summary with throughput gap and capacity recommendation
 - Flow balance summary that counts growing/stable/draining stages plus top growth/drain stages
 - Action queue for the top three stages needing attention
-- Stage service-time averages and p90s to gauge processing variability
+- Stage service-time averages, p90s, and throughput volatility (CV) to gauge processing variability
 - JSON or text output for briefs and weekly operations updates
 
 ## Quickstart
@@ -45,6 +45,7 @@ go run . --write-sample /tmp/review-config.json
 {
   "horizon_days": 60,
   "arrival_rate_per_day": 18,
+  "arrival_mode": "fixed",
   "target_cycle_days": 21,
   "near_due_window_days": 3,
   "stages": [

@@ -31,3 +31,7 @@
 ## Iteration 6
 - Added stage service-time tracking with average and p90 service durations.
 - Extended text/JSON outputs and README to surface processing variability per stage.
+
+## Iteration 7
+- Added throughput volatility tracking (daily completions, std dev, coefficient of variation) per stage.
+- Updated action queue and text report to flag volatile throughput alongside queue volatility.
