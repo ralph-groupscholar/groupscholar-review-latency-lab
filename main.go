@@ -19,6 +19,7 @@ type Config struct {
 	ArrivalMode       string        `json:"arrival_mode"`
 	TargetCycleDays   int           `json:"target_cycle_days"`
 	NearDueWindowDays int           `json:"near_due_window_days"`
+	StageNearDueDays  int           `json:"stage_near_due_window_days"`
 	Stages            []StageConfig `json:"stages"`
 }
 
@@ -159,6 +160,7 @@ const sampleConfig = `{
   "arrival_mode": "fixed",
   "target_cycle_days": 21,
   "near_due_window_days": 3,
+  "stage_near_due_window_days": 1,
   "stages": [
     {"name": "Intake", "capacity_per_day": 20, "min_days": 1, "max_days": 2},
     {"name": "Eligibility Review", "capacity_per_day": 14, "min_days": 2, "max_days": 5},
@@ -234,6 +236,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.NearDueWindowDays == 0 {
 		cfg.NearDueWindowDays = 3
 	}
+	if cfg.StageNearDueDays == 0 {
+		cfg.StageNearDueDays = 1
+	}
 	if cfg.ArrivalMode == "" {
 		cfg.ArrivalMode = "fixed"
 	}
@@ -254,6 +259,9 @@ func validateConfig(cfg Config) error {
 	}
 	if cfg.NearDueWindowDays < 0 {
 		return errors.New("near_due_window_days must be >= 0")
+	}
+	if cfg.StageNearDueDays < 0 {
+		return errors.New("stage_near_due_window_days must be >= 0")
 	}
 	if len(cfg.Stages) == 0 {
 		return errors.New("stages must include at least one stage")
@@ -408,7 +416,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		}
 		wip := len(stage.Queue) + len(stage.InProgress)
 		wipTotal += wip
-		avgAge, oldestAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays)
+		avgAge, oldestAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays, cfg.StageNearDueDays)
 		flowEfficiency := 0.0
 		if avgQueue+avgActive > 0 {
 			flowEfficiency = avgActive / (avgQueue + avgActive)
@@ -687,13 +695,12 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 	return items
 }
 
-func computeStageAging(stage *StageState, horizonDays int) (float64, int, int, int) {
+func computeStageAging(stage *StageState, horizonDays, nearWindow int) (float64, int, int, int) {
 	totalAge := 0
 	count := 0
 	oldest := 0
 	overdue := 0
 	nearDue := 0
-	nearWindow := 1
 	apps := append([]*Application{}, stage.Queue...)
 	apps = append(apps, stage.InProgress...)
 	for _, app := range apps {

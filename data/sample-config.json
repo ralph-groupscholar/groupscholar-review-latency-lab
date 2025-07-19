@@ -1,8 +1,10 @@
 {
   "horizon_days": 60,
   "arrival_rate_per_day": 18,
+  "arrival_mode": "fixed",
   "target_cycle_days": 21,
   "near_due_window_days": 3,
+  "stage_near_due_window_days": 1,
   "stages": [
     {"name": "Intake", "capacity_per_day": 20, "min_days": 1, "max_days": 2},
     {"name": "Eligibility Review", "capacity_per_day": 14, "min_days": 2, "max_days": 5},

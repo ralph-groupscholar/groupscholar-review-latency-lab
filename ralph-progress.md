@@ -33,5 +33,9 @@
 - Extended text/JSON outputs and README to surface processing variability per stage.
 
 ## Iteration 7
+- Added stage-level near-due window configuration to tune stage aging alerts.
+- Updated sample configs and README to document the stage near-due window setting.
+
+## Iteration 7
 - Added throughput volatility tracking (daily completions, std dev, coefficient of variation) per stage.
 - Updated action queue and text report to flag volatile throughput alongside queue volatility.

@@ -48,6 +48,7 @@ go run . --write-sample /tmp/review-config.json
   "arrival_mode": "fixed",
   "target_cycle_days": 21,
   "near_due_window_days": 3,
+  "stage_near_due_window_days": 1,
   "stages": [
     {"name": "Intake", "capacity_per_day": 20, "min_days": 1, "max_days": 2}
   ]
@@ -58,3 +59,5 @@ go run . --write-sample /tmp/review-config.json
 
 This tool uses a deterministic seed if you pass `--seed`. If you do not, it will use the current time.
 Stage aging in the report is calculated from stage entry and flags near-due work when it is within 1 day of the stage max.
+`arrival_mode` accepts `fixed` (deterministic) or `poisson` (randomized around the mean).
+`stage_near_due_window_days` adjusts the stage-level near-due window (default: 1 day).
