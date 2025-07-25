@@ -39,3 +39,7 @@
 ## Iteration 7
 - Added throughput volatility tracking (daily completions, std dev, coefficient of variation) per stage.
 - Updated action queue and text report to flag volatile throughput alongside queue volatility.
+
+## Iteration 8
+- Added arrival and net-flow volatility metrics (std dev/CV) per stage plus overall arrival volatility.
+- Extended text output and JSON report fields to surface demand swings and backlog instability.

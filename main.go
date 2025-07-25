@@ -45,6 +45,7 @@ type StageState struct {
 	Queue          []*Application
 	InProgress     []*Application
 	ArrivalSum     int
+	ArrivalDaily   []int
 	QueueSum       int
 	ActiveSum      int
 	CompletedSum   int
@@ -66,6 +67,8 @@ type Report struct {
 	ArrivalMode       string            `json:"arrival_mode"`
 	TotalArrivals     int               `json:"total_arrivals"`
 	AverageArrivals   float64           `json:"average_arrivals_per_day"`
+	ArrivalStdDev     float64           `json:"arrival_std_dev"`
+	ArrivalCV         float64           `json:"arrival_cv"`
 	TotalCompleted    int               `json:"total_completed"`
 	CompletionRate    float64           `json:"completion_rate"`
 	AverageCycleDays  float64           `json:"average_cycle_days"`
@@ -102,6 +105,10 @@ type StageSummary struct {
 	ThroughputPerDay   float64 `json:"throughput_per_day"`
 	ThroughputStdDev   float64 `json:"throughput_std_dev"`
 	ThroughputCV       float64 `json:"throughput_cv"`
+	ArrivalStdDev      float64 `json:"arrival_std_dev"`
+	ArrivalCV          float64 `json:"arrival_cv"`
+	NetFlowStdDev      float64 `json:"net_flow_std_dev"`
+	NetFlowCV          float64 `json:"net_flow_cv"`
 	BacklogDays        float64 `json:"backlog_days"`
 	BacklogBlocked     bool    `json:"backlog_blocked"`
 	ArrivalsPerDay     float64 `json:"arrivals_per_day"`
@@ -294,6 +301,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 	idCounter := 0
 
 	for day := 1; day <= cfg.HorizonDays; day++ {
+		dailyArrivals := make([]int, len(stages))
 		arrivalsToday := arrivalsForDay(cfg, rng)
 		for i := 0; i < arrivalsToday; i++ {
 			idCounter++
@@ -302,6 +310,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 			stages[0].Queue = append(stages[0].Queue, app)
 			stages[0].ArrivalSum++
 		}
+		dailyArrivals[0] = arrivalsToday
 
 		for idx, stage := range stages {
 			completedToday := 0
@@ -327,6 +336,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 					app.StageEnteredDay = day
 					stages[idx+1].Queue = append(stages[idx+1].Queue, app)
 					stages[idx+1].ArrivalSum++
+					dailyArrivals[idx+1]++
 				}
 			}
 			stage.InProgress = stillWorking
@@ -361,6 +371,7 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 			if len(stage.InProgress) > stage.ActivePeak {
 				stage.ActivePeak = len(stage.InProgress)
 			}
+			stage.ArrivalDaily = append(stage.ArrivalDaily, dailyArrivals[idx])
 			stage.CompletedDaily = append(stage.CompletedDaily, completedToday)
 		}
 	}
@@ -384,6 +395,14 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 	}
 	if cfg.HorizonDays > 0 {
 		avgArrivals = float64(totalArrivals) / float64(cfg.HorizonDays)
+	}
+	arrivalStdDev := 0.0
+	if len(stages) > 0 {
+		arrivalStdDev = stdDev(stages[0].ArrivalDaily)
+	}
+	arrivalCV := 0.0
+	if avgArrivals > 0 {
+		arrivalCV = arrivalStdDev / avgArrivals
 	}
 
 	percentiles := computePercentiles(completed, []int{50, 90, 95})
@@ -431,7 +450,21 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			throughputCV = throughputStdDev / throughputPerDay
 		}
 		arrivalsPerDay := float64(stage.ArrivalSum) / float64(cfg.HorizonDays)
+		arrivalStdDev := stdDev(stage.ArrivalDaily)
+		arrivalCV := 0.0
+		if arrivalsPerDay > 0 {
+			arrivalCV = arrivalStdDev / arrivalsPerDay
+		}
 		netFlow := arrivalsPerDay - throughputPerDay
+		netFlowDaily := make([]int, len(stage.ArrivalDaily))
+		for i := range stage.ArrivalDaily {
+			netFlowDaily[i] = stage.ArrivalDaily[i] - stage.CompletedDaily[i]
+		}
+		netFlowStdDev := stdDev(netFlowDaily)
+		netFlowCV := 0.0
+		if math.Abs(netFlow) > 0 {
+			netFlowCV = netFlowStdDev / math.Abs(netFlow)
+		}
 		flowBalance := classifyFlowBalance(netFlow)
 		switch flowBalance {
 		case "Growing":
@@ -471,6 +504,10 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			ThroughputPerDay:   round(throughputPerDay, 2),
 			ThroughputStdDev:   round(throughputStdDev, 2),
 			ThroughputCV:       round(throughputCV, 2),
+			ArrivalStdDev:      round(arrivalStdDev, 2),
+			ArrivalCV:          round(arrivalCV, 2),
+			NetFlowStdDev:      round(netFlowStdDev, 2),
+			NetFlowCV:          round(netFlowCV, 2),
 			BacklogDays:        round(backlogDays, 2),
 			BacklogBlocked:     backlogBlocked,
 			ArrivalsPerDay:     round(arrivalsPerDay, 2),
@@ -510,6 +547,8 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		ArrivalMode:       cfg.ArrivalMode,
 		TotalArrivals:     totalArrivals,
 		AverageArrivals:   round(avgArrivals, 2),
+		ArrivalStdDev:     round(arrivalStdDev, 2),
+		ArrivalCV:         round(arrivalCV, 2),
 		TotalCompleted:    len(completed),
 		CompletionRate:    round(completionRate, 3),
 		AverageCycleDays:  round(avgCycle, 2),
@@ -871,6 +910,7 @@ func printReport(report Report) {
 	fmt.Printf("Horizon: %d days\n", report.HorizonDays)
 	fmt.Printf("Arrivals per day: %d (%s)\n", report.ArrivalRatePerDay, report.ArrivalMode)
 	fmt.Printf("Average arrivals per day: %.2f\n", report.AverageArrivals)
+	fmt.Printf("Arrival volatility: std dev %.2f | cv %.2f\n", report.ArrivalStdDev, report.ArrivalCV)
 	fmt.Printf("Total arrivals: %d\n", report.TotalArrivals)
 	fmt.Printf("Completed: %d (%.1f%%)\n", report.TotalCompleted, report.CompletionRate*100)
 	fmt.Printf("Average cycle time: %.2f days\n", report.AverageCycleDays)
@@ -919,7 +959,7 @@ func printReport(report Report) {
 	fmt.Println()
 	fmt.Println("Stage detail")
 	for _, stage := range report.StageSummaries {
-		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | avg service %.2f days | svc p90 %d days | util %.2f | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | wip %d | avg age %.2f days | oldest %d days | stage max %d days",
+		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | avg service %.2f days | svc p90 %d days | util %.2f | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | avg age %.2f days | oldest %d days | stage max %d days",
 			stage.Name,
 			stage.Capacity,
 			stage.AverageQueue,
@@ -931,6 +971,8 @@ func printReport(report Report) {
 			stage.Pressure,
 			stage.ThroughputPerDay,
 			stage.ThroughputCV,
+			stage.ArrivalCV,
+			stage.NetFlowCV,
 			stage.WIP,
 			stage.AverageAgeDays,
 			stage.OldestAgeDays,
