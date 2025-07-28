@@ -43,3 +43,8 @@
 ## Iteration 8
 - Added arrival and net-flow volatility metrics (std dev/CV) per stage plus overall arrival volatility.
 - Extended text output and JSON report fields to surface demand swings and backlog instability.
+
+## Iteration 9
+- Added WIP trend regression (slope + fit) per stage to flag persistent backlog growth/decline.
+- Extended action queue and text/JSON outputs to surface increasing WIP trends.
+- Added unit tests for trend regression and classification.

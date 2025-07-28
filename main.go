@@ -116,6 +116,9 @@ type StageSummary struct {
 	FlowBalance        string  `json:"flow_balance"`
 	QueuePeak          int     `json:"queue_peak"`
 	ActivePeak         int     `json:"active_peak"`
+	WIPTrendSlope      float64 `json:"wip_trend_slope"`
+	WIPTrendR2         float64 `json:"wip_trend_r2"`
+	WIPTrend           string  `json:"wip_trend"`
 }
 
 type BacklogHighlights struct {
@@ -417,6 +420,13 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 	topGrowth := -math.MaxFloat64
 	topDrain := math.MaxFloat64
 	for _, stage := range stages {
+		wipDaily := make([]int, len(stage.QueueSamples))
+		for i := range stage.QueueSamples {
+			wipDaily[i] = stage.QueueSamples[i] + stage.ActiveSamples[i]
+		}
+		wipSlope, wipR2 := linearTrend(wipDaily)
+		wipTrend := classifyTrend(wipSlope)
+
 		avgQueue := float64(stage.QueueSum) / float64(cfg.HorizonDays)
 		avgActive := float64(stage.ActiveSum) / float64(cfg.HorizonDays)
 		avgService := 0.0
@@ -515,6 +525,9 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			FlowBalance:        flowBalance,
 			QueuePeak:          stage.QueuePeak,
 			ActivePeak:         stage.ActivePeak,
+			WIPTrendSlope:      round(wipSlope, 3),
+			WIPTrendR2:         round(wipR2, 3),
+			WIPTrend:           wipTrend,
 		}
 		stageSummaries = append(stageSummaries, summary)
 		if summary.AverageQueue > topQueue.AverageQueue {
@@ -677,6 +690,12 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		if stage.BacklogBlocked {
 			score += 10
 		}
+		if stage.WIPTrend == "Increasing" {
+			score += 2
+			if stage.WIPTrendR2 >= 0.4 {
+				score += 1
+			}
+		}
 
 		signals := make([]string, 0, 6)
 		if stage.OverdueWIP > 0 {
@@ -699,6 +718,9 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		}
 		if stage.ThroughputCV >= 0.6 {
 			signals = append(signals, "volatile_throughput")
+		}
+		if stage.WIPTrend == "Increasing" {
+			signals = append(signals, "wip_trend_increasing")
 		}
 		if stage.BacklogDays >= 5 {
 			signals = append(signals, "backlog_days_high")
@@ -904,6 +926,60 @@ func classifyFlowBalance(netFlow float64) string {
 	}
 }
 
+func linearTrend(values []int) (float64, float64) {
+	n := len(values)
+	if n < 2 {
+		return 0, 0
+	}
+	meanX := float64(n+1) / 2
+	sumY := 0.0
+	for _, v := range values {
+		sumY += float64(v)
+	}
+	meanY := sumY / float64(n)
+
+	num := 0.0
+	den := 0.0
+	for i, v := range values {
+		x := float64(i + 1)
+		dx := x - meanX
+		dy := float64(v) - meanY
+		num += dx * dy
+		den += dx * dx
+	}
+	if den == 0 {
+		return 0, 0
+	}
+	slope := num / den
+
+	sst := 0.0
+	sse := 0.0
+	for i, v := range values {
+		x := float64(i + 1)
+		pred := meanY + slope*(x-meanX)
+		diff := float64(v) - meanY
+		sst += diff * diff
+		err := float64(v) - pred
+		sse += err * err
+	}
+	r2 := 0.0
+	if sst > 0 {
+		r2 = 1 - (sse / sst)
+	}
+	return slope, r2
+}
+
+func classifyTrend(slope float64) string {
+	switch {
+	case slope >= 0.5:
+		return "Increasing"
+	case slope <= -0.5:
+		return "Decreasing"
+	default:
+		return "Flat"
+	}
+}
+
 func printReport(report Report) {
 	fmt.Println("Group Scholar Review Latency Lab")
 	fmt.Println("--------------------------------")
@@ -959,7 +1035,7 @@ func printReport(report Report) {
 	fmt.Println()
 	fmt.Println("Stage detail")
 	for _, stage := range report.StageSummaries {
-		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | avg service %.2f days | svc p90 %d days | util %.2f | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | avg age %.2f days | oldest %d days | stage max %d days",
+		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | avg service %.2f days | svc p90 %d days | util %.2f | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | wip trend %s (slope %.2f, r2 %.2f) | avg age %.2f days | oldest %d days | stage max %d days",
 			stage.Name,
 			stage.Capacity,
 			stage.AverageQueue,
@@ -974,6 +1050,9 @@ func printReport(report Report) {
 			stage.ArrivalCV,
 			stage.NetFlowCV,
 			stage.WIP,
+			stage.WIPTrend,
+			stage.WIPTrendSlope,
+			stage.WIPTrendR2,
 			stage.AverageAgeDays,
 			stage.OldestAgeDays,
 			stage.MaxDays,

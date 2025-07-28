@@ -14,6 +14,7 @@ A local-first simulation CLI for exploring scholarship application review throug
 - Action queue for the top three stages needing attention
 - Stage service-time averages, p90s, and throughput volatility (CV) to gauge processing variability
 - Arrival and net-flow volatility (CV) to show demand swings and backlog instability
+- WIP trend regression (slope and fit) to flag persistent backlog growth or decline
 - JSON or text output for briefs and weekly operations updates
 
 ## Quickstart
