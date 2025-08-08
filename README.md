@@ -8,13 +8,17 @@ A local-first simulation CLI for exploring scholarship application review throug
 - Capacity, service-time, and arrival-rate modeling (fixed or Poisson)
 - Cycle-time percentiles, utilization, queue pressure, and backlog summaries
 - Stage aging and near-due risk signals for in-flight work
+- Stage aging percentiles (p50/p90) to spot skewed wait times
 - Projected SLA risk bands for in-flight work (min/max remaining service time)
 - Constraint-stage summary with throughput gap and capacity recommendation
 - Flow balance summary that counts growing/stable/draining stages plus top growth/drain stages
 - Action queue for the top three stages needing attention
-- Stage service-time averages, p90s, and throughput volatility (CV) to gauge processing variability
+- Stage service-time averages, p90s, std dev, and CV plus throughput volatility to gauge processing variability
+- Stage cycle-time averages, percentiles, and on-time rate to flag SLA erosion
+- Queue and active WIP percentiles (p50/p90) to quantify typical vs. worst-case stage load
 - Arrival and net-flow volatility (CV) to show demand swings and backlog instability
 - WIP trend regression (slope and fit) to flag persistent backlog growth or decline
+- Capacity slack (per day and percent) to quantify buffer before saturation
 - JSON or text output for briefs and weekly operations updates
 
 ## Quickstart
@@ -40,6 +44,18 @@ go run . --format json
 ```bash
 go run . --write-sample /tmp/review-config.json
 ```
+
+## Store runs in Postgres
+
+Set `GS_REVIEW_LATENCY_DB_URL` (or `DATABASE_URL`) to a Postgres connection string, then:
+
+```bash
+go run . --init-db
+go run . --store
+```
+
+`--init-db` creates the `review_latency_lab` schema and seeds a few sample runs if empty.
+`--store` saves the current run alongside per-stage summaries.
 
 ## Config schema
 

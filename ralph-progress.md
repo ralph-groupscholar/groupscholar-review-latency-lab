@@ -48,3 +48,33 @@
 - Added WIP trend regression (slope + fit) per stage to flag persistent backlog growth/decline.
 - Extended action queue and text/JSON outputs to surface increasing WIP trends.
 - Added unit tests for trend regression and classification.
+
+## Iteration 14
+- Added Postgres storage for simulation runs and per-stage summaries with init/seed support.
+- Added CLI flags for database setup and updated README with storage instructions.
+- Added unit tests covering percentiles, flow balance classification, and trend detection.
+
+## Iteration 88
+- Added queue/active p50 and p90 percentiles to stage summaries for load distribution insight.
+- Stored queue/active percentiles in Postgres stage summaries and updated the text report output.
+- Added percentile coverage in tests and documented the new percentile feature.
+
+## Iteration 99
+- Added stage cycle-time metrics (avg/p50/p90, on-time rate, over-max count) to quantify in-stage SLA performance.
+- Extended text/JSON reports and Postgres storage schema to include the new stage cycle-time signals.
+- Added unit tests covering stage cycle-time summary calculations.
+
+## Iteration 102
+- Added stage service-time variability metrics (std dev and CV) to summaries, action queue, and text/JSON output.
+- Extended Postgres schema/storage to persist service-time variability metrics.
+- Added tests covering service-time variability calculations.
+
+## Iteration 103
+- Fixed Postgres stage summary storage to include idle/starved days plus recovery and backlog clearance metrics.
+- Added schema migrations for service-time variability columns to keep existing databases consistent.
+- Updated stage summary inserts to persist recovery throughput and clearance signals.
+
+## Iteration 103
+- Added capacity slack per day and slack percent metrics to stage summaries and action signals.
+- Extended text/JSON reports and Postgres storage to persist capacity slack fields.
+- Added test coverage for capacity slack calculations.

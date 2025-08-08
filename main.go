@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Config struct {
@@ -41,24 +45,31 @@ type Application struct {
 }
 
 type StageState struct {
-	Config         StageConfig
-	Queue          []*Application
-	InProgress     []*Application
-	ArrivalSum     int
-	ArrivalDaily   []int
-	QueueSum       int
-	ActiveSum      int
-	CompletedSum   int
-	ServiceSum     int
-	ServiceSamples int
-	ServiceTimes   []int
-	CompletedDaily []int
-	QueueDays      int
-	ActiveDays     int
-	QueuePeak      int
-	ActivePeak     int
-	QueueSamples   []int
-	ActiveSamples  []int
+	Config            StageConfig
+	Queue             []*Application
+	InProgress        []*Application
+	ArrivalSum        int
+	ArrivalDaily      []int
+	QueueSum          int
+	ActiveSum         int
+	CompletedSum      int
+	ServiceSum        int
+	ServiceSamples    int
+	ServiceTimes      []int
+	StageCycleSum     int
+	StageCycleSamples int
+	StageCycleTimes   []int
+	StageOnTime       int
+	StageOverMax      int
+	CompletedDaily    []int
+	QueueDays         int
+	ActiveDays        int
+	IdleDays          int
+	StarvedDays       int
+	QueuePeak         int
+	ActivePeak        int
+	QueueSamples      []int
+	ActiveSamples     []int
 }
 
 type Report struct {
@@ -83,42 +94,70 @@ type Report struct {
 }
 
 type StageSummary struct {
-	Name               string  `json:"name"`
-	Capacity           int     `json:"capacity_per_day"`
-	MaxDays            int     `json:"max_days"`
-	AverageQueue       float64 `json:"average_queue"`
-	AverageActive      float64 `json:"average_active"`
-	AverageServiceDays float64 `json:"average_service_days"`
-	ServiceTimeP90     int     `json:"service_time_p90"`
-	Utilization        float64 `json:"utilization_rate"`
-	EstimatedWaitDays  float64 `json:"estimated_wait_days"`
-	Pressure           string  `json:"pressure"`
-	WIP                int     `json:"wip"`
-	AverageAgeDays     float64 `json:"average_age_days"`
-	OldestAgeDays      int     `json:"oldest_age_days"`
-	OverdueWIP         int     `json:"overdue_wip"`
-	NearDueWIP         int     `json:"near_due_wip"`
-	QueueDaysPct       float64 `json:"queue_days_pct"`
-	ActiveDaysPct      float64 `json:"active_days_pct"`
-	QueueVolatility    float64 `json:"queue_volatility"`
-	FlowEfficiency     float64 `json:"flow_efficiency"`
-	ThroughputPerDay   float64 `json:"throughput_per_day"`
-	ThroughputStdDev   float64 `json:"throughput_std_dev"`
-	ThroughputCV       float64 `json:"throughput_cv"`
-	ArrivalStdDev      float64 `json:"arrival_std_dev"`
-	ArrivalCV          float64 `json:"arrival_cv"`
-	NetFlowStdDev      float64 `json:"net_flow_std_dev"`
-	NetFlowCV          float64 `json:"net_flow_cv"`
-	BacklogDays        float64 `json:"backlog_days"`
-	BacklogBlocked     bool    `json:"backlog_blocked"`
-	ArrivalsPerDay     float64 `json:"arrivals_per_day"`
-	NetFlowPerDay      float64 `json:"net_flow_per_day"`
-	FlowBalance        string  `json:"flow_balance"`
-	QueuePeak          int     `json:"queue_peak"`
-	ActivePeak         int     `json:"active_peak"`
-	WIPTrendSlope      float64 `json:"wip_trend_slope"`
-	WIPTrendR2         float64 `json:"wip_trend_r2"`
-	WIPTrend           string  `json:"wip_trend"`
+	Name                string  `json:"name"`
+	Capacity            int     `json:"capacity_per_day"`
+	MaxDays             int     `json:"max_days"`
+	AverageQueue        float64 `json:"average_queue"`
+	QueueP50            int     `json:"queue_p50"`
+	QueueP90            int     `json:"queue_p90"`
+	AverageActive       float64 `json:"average_active"`
+	ActiveP50           int     `json:"active_p50"`
+	ActiveP90           int     `json:"active_p90"`
+	AverageServiceDays  float64 `json:"average_service_days"`
+	ServiceTimeP90      int     `json:"service_time_p90"`
+	ServiceTimeStdDev   float64 `json:"service_time_std_dev"`
+	ServiceTimeCV       float64 `json:"service_time_cv"`
+	StageCycleAvg       float64 `json:"stage_cycle_avg"`
+	StageCycleP50       int     `json:"stage_cycle_p50"`
+	StageCycleP90       int     `json:"stage_cycle_p90"`
+	StageCycleStdDev    float64 `json:"stage_cycle_std_dev"`
+	StageCycleCV        float64 `json:"stage_cycle_cv"`
+	StageOnTimeRate     float64 `json:"stage_on_time_rate"`
+	StageOverMax        int     `json:"stage_over_max"`
+	Utilization         float64 `json:"utilization_rate"`
+	EstimatedWaitDays   float64 `json:"estimated_wait_days"`
+	Pressure            string  `json:"pressure"`
+	WIP                 int     `json:"wip"`
+	AverageAgeDays      float64 `json:"average_age_days"`
+	AgeP50              int     `json:"age_p50"`
+	AgeP90              int     `json:"age_p90"`
+	OldestAgeDays       int     `json:"oldest_age_days"`
+	OverdueWIP          int     `json:"overdue_wip"`
+	NearDueWIP          int     `json:"near_due_wip"`
+	ProjectedWIP        int     `json:"projected_wip_total"`
+	ProjectedLateMin    int     `json:"projected_late_min"`
+	ProjectedLateMax    int     `json:"projected_late_max"`
+	QueueDaysPct        float64 `json:"queue_days_pct"`
+	ActiveDaysPct       float64 `json:"active_days_pct"`
+	QueueVolatility     float64 `json:"queue_volatility"`
+	FlowEfficiency      float64 `json:"flow_efficiency"`
+	ThroughputPerDay    float64 `json:"throughput_per_day"`
+	ThroughputStdDev    float64 `json:"throughput_std_dev"`
+	ThroughputCV        float64 `json:"throughput_cv"`
+	ArrivalStdDev       float64 `json:"arrival_std_dev"`
+	ArrivalCV           float64 `json:"arrival_cv"`
+	NetFlowStdDev       float64 `json:"net_flow_std_dev"`
+	NetFlowCV           float64 `json:"net_flow_cv"`
+	CapacitySlack       float64 `json:"capacity_slack_per_day"`
+	CapacitySlackPct    float64 `json:"capacity_slack_pct"`
+	IdleDays            int     `json:"idle_days"`
+	IdleDaysPct         float64 `json:"idle_days_pct"`
+	StarvedDays         int     `json:"starved_days"`
+	StarvedDaysPct      float64 `json:"starved_days_pct"`
+	RecoveryThroughput  float64 `json:"recovery_throughput_per_day"`
+	RecoveryGap         float64 `json:"recovery_gap_per_day"`
+	BacklogDays         float64 `json:"backlog_days"`
+	BacklogBlocked      bool    `json:"backlog_blocked"`
+	ArrivalsPerDay      float64 `json:"arrivals_per_day"`
+	NetFlowPerDay       float64 `json:"net_flow_per_day"`
+	FlowBalance         string  `json:"flow_balance"`
+	QueuePeak           int     `json:"queue_peak"`
+	ActivePeak          int     `json:"active_peak"`
+	WIPTrendSlope       float64 `json:"wip_trend_slope"`
+	WIPTrendR2          float64 `json:"wip_trend_r2"`
+	WIPTrend            string  `json:"wip_trend"`
+	BacklogClearDays    float64 `json:"backlog_clearance_days"`
+	BacklogClearBlocked bool    `json:"backlog_clearance_blocked"`
 }
 
 type BacklogHighlights struct {
@@ -185,6 +224,8 @@ func main() {
 	seed := flag.Int64("seed", time.Now().UnixNano(), "Random seed")
 	format := flag.String("format", "text", "Output format: text or json")
 	writeSample := flag.String("write-sample", "", "Write sample config to path and exit")
+	storeRun := flag.Bool("store", false, "Store report to Postgres (requires DATABASE_URL or GS_REVIEW_LATENCY_DB_URL)")
+	initDB := flag.Bool("init-db", false, "Initialize Postgres schema and seed data")
 	flag.Parse()
 
 	if *writeSample != "" {
@@ -206,6 +247,30 @@ func main() {
 
 	rng := rand.New(rand.NewSource(*seed))
 	report := simulate(cfg, rng)
+
+	if *storeRun || *initDB {
+		db, err := openDB()
+		if err != nil {
+			fatal(err)
+		}
+		defer db.Close()
+
+		if *initDB {
+			if err := initializeDatabase(db); err != nil {
+				fatal(err)
+			}
+			if err := seedDatabaseIfEmpty(db, cfg, *seed); err != nil {
+				fatal(err)
+			}
+		}
+
+		if *storeRun {
+			if err := storeSimulationRun(db, cfg, report, *seed, "manual"); err != nil {
+				fatal(err)
+			}
+			fmt.Println("Stored simulation run in Postgres.")
+		}
+	}
 
 	if strings.EqualFold(*format, "json") {
 		payload, err := json.MarshalIndent(report, "", "  ")
@@ -330,6 +395,15 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 				stage.ServiceSum += app.ServiceTime
 				stage.ServiceSamples++
 				stage.ServiceTimes = append(stage.ServiceTimes, app.ServiceTime)
+				stageCycle := day - app.StageEnteredDay + 1
+				stage.StageCycleSum += stageCycle
+				stage.StageCycleSamples++
+				stage.StageCycleTimes = append(stage.StageCycleTimes, stageCycle)
+				if stageCycle <= stage.Config.MaxDays {
+					stage.StageOnTime++
+				} else {
+					stage.StageOverMax++
+				}
 				if idx == len(stages)-1 {
 					cycle := day - app.ArrivalDay + 1
 					app.CompletedDay = day
@@ -367,6 +441,12 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 			}
 			if len(stage.InProgress) > 0 {
 				stage.ActiveDays++
+			}
+			if len(stage.Queue) == 0 && len(stage.InProgress) == 0 {
+				stage.IdleDays++
+			}
+			if len(stage.Queue) > 0 && len(stage.InProgress) == 0 {
+				stage.StarvedDays++
 			}
 			if len(stage.Queue) > stage.QueuePeak {
 				stage.QueuePeak = len(stage.Queue)
@@ -429,11 +509,42 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 
 		avgQueue := float64(stage.QueueSum) / float64(cfg.HorizonDays)
 		avgActive := float64(stage.ActiveSum) / float64(cfg.HorizonDays)
+		capacitySlack := 0.0
+		capacitySlackPct := 0.0
+		if stage.Config.CapacityPerDay > 0 {
+			capacitySlack = maxFloat(float64(stage.Config.CapacityPerDay)-avgActive, 0)
+			capacitySlackPct = capacitySlack / float64(stage.Config.CapacityPerDay)
+		}
+		queuePercentiles := computePercentiles(stage.QueueSamples, []int{50, 90})
+		activePercentiles := computePercentiles(stage.ActiveSamples, []int{50, 90})
 		avgService := 0.0
 		serviceP90 := 0
+		serviceStdDev := 0.0
+		serviceCV := 0.0
 		if stage.ServiceSamples > 0 {
 			avgService = float64(stage.ServiceSum) / float64(stage.ServiceSamples)
 			serviceP90 = computePercentiles(stage.ServiceTimes, []int{90})["p90"]
+			serviceStdDev = stdDev(stage.ServiceTimes)
+			if avgService > 0 {
+				serviceCV = serviceStdDev / avgService
+			}
+		}
+		stageCycleAvg := 0.0
+		stageCycleP50 := 0
+		stageCycleP90 := 0
+		stageCycleStdDev := 0.0
+		stageCycleCV := 0.0
+		stageOnTimeRate := 0.0
+		if stage.StageCycleSamples > 0 {
+			stageCycleAvg = float64(stage.StageCycleSum) / float64(stage.StageCycleSamples)
+			stageCyclePercentiles := computePercentiles(stage.StageCycleTimes, []int{50, 90})
+			stageCycleP50 = stageCyclePercentiles["p50"]
+			stageCycleP90 = stageCyclePercentiles["p90"]
+			stageCycleStdDev = stdDev(stage.StageCycleTimes)
+			if stageCycleAvg > 0 {
+				stageCycleCV = stageCycleStdDev / stageCycleAvg
+			}
+			stageOnTimeRate = float64(stage.StageOnTime) / float64(stage.StageCycleSamples)
 		}
 		utilization := 0.0
 		if stage.Config.CapacityPerDay > 0 {
@@ -445,7 +556,8 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		}
 		wip := len(stage.Queue) + len(stage.InProgress)
 		wipTotal += wip
-		avgAge, oldestAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays, cfg.StageNearDueDays)
+		avgAge, ageP50, ageP90, oldestAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays, cfg.StageNearDueDays)
+		projectedWIP, projectedLateMin, projectedLateMax := computeStageProjectedRisk(cfg, stage)
 		flowEfficiency := 0.0
 		if avgQueue+avgActive > 0 {
 			flowEfficiency = avgActive / (avgQueue + avgActive)
@@ -491,43 +603,72 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			backlogBlocked = true
 			backlogScore = math.Inf(1)
 		}
+		recoveryThroughput, recoveryGap, clearDays, clearBlocked := computeRecovery(throughputPerDay, arrivalsPerDay, wip, stage.Config.MaxDays)
 		summary := StageSummary{
-			Name:               stage.Config.Name,
-			Capacity:           stage.Config.CapacityPerDay,
-			MaxDays:            stage.Config.MaxDays,
-			AverageQueue:       round(avgQueue, 2),
-			AverageActive:      round(avgActive, 2),
-			AverageServiceDays: round(avgService, 2),
-			ServiceTimeP90:     serviceP90,
-			Utilization:        round(utilization, 2),
-			EstimatedWaitDays:  round(estimatedWait, 2),
-			Pressure:           classifyPressure(utilization, estimatedWait),
-			WIP:                wip,
-			AverageAgeDays:     round(avgAge, 2),
-			OldestAgeDays:      oldestAge,
-			OverdueWIP:         overdueWIP,
-			NearDueWIP:         nearDueWIP,
-			QueueDaysPct:       round(float64(stage.QueueDays)/float64(cfg.HorizonDays), 3),
-			ActiveDaysPct:      round(float64(stage.ActiveDays)/float64(cfg.HorizonDays), 3),
-			QueueVolatility:    round(stdDev(stage.QueueSamples), 2),
-			FlowEfficiency:     round(flowEfficiency, 3),
-			ThroughputPerDay:   round(throughputPerDay, 2),
-			ThroughputStdDev:   round(throughputStdDev, 2),
-			ThroughputCV:       round(throughputCV, 2),
-			ArrivalStdDev:      round(arrivalStdDev, 2),
-			ArrivalCV:          round(arrivalCV, 2),
-			NetFlowStdDev:      round(netFlowStdDev, 2),
-			NetFlowCV:          round(netFlowCV, 2),
-			BacklogDays:        round(backlogDays, 2),
-			BacklogBlocked:     backlogBlocked,
-			ArrivalsPerDay:     round(arrivalsPerDay, 2),
-			NetFlowPerDay:      round(netFlow, 2),
-			FlowBalance:        flowBalance,
-			QueuePeak:          stage.QueuePeak,
-			ActivePeak:         stage.ActivePeak,
-			WIPTrendSlope:      round(wipSlope, 3),
-			WIPTrendR2:         round(wipR2, 3),
-			WIPTrend:           wipTrend,
+			Name:                stage.Config.Name,
+			Capacity:            stage.Config.CapacityPerDay,
+			MaxDays:             stage.Config.MaxDays,
+			AverageQueue:        round(avgQueue, 2),
+			QueueP50:            queuePercentiles["p50"],
+			QueueP90:            queuePercentiles["p90"],
+			AverageActive:       round(avgActive, 2),
+			ActiveP50:           activePercentiles["p50"],
+			ActiveP90:           activePercentiles["p90"],
+			AverageServiceDays:  round(avgService, 2),
+			ServiceTimeP90:      serviceP90,
+			ServiceTimeStdDev:   round(serviceStdDev, 2),
+			ServiceTimeCV:       round(serviceCV, 2),
+			StageCycleAvg:       round(stageCycleAvg, 2),
+			StageCycleP50:       stageCycleP50,
+			StageCycleP90:       stageCycleP90,
+			StageCycleStdDev:    round(stageCycleStdDev, 2),
+			StageCycleCV:        round(stageCycleCV, 2),
+			StageOnTimeRate:     round(stageOnTimeRate, 3),
+			StageOverMax:        stage.StageOverMax,
+			Utilization:         round(utilization, 2),
+			EstimatedWaitDays:   round(estimatedWait, 2),
+			Pressure:            classifyPressure(utilization, estimatedWait),
+			WIP:                 wip,
+			AverageAgeDays:      round(avgAge, 2),
+			AgeP50:              ageP50,
+			AgeP90:              ageP90,
+			OldestAgeDays:       oldestAge,
+			OverdueWIP:          overdueWIP,
+			NearDueWIP:          nearDueWIP,
+			ProjectedWIP:        projectedWIP,
+			ProjectedLateMin:    projectedLateMin,
+			ProjectedLateMax:    projectedLateMax,
+			QueueDaysPct:        round(float64(stage.QueueDays)/float64(cfg.HorizonDays), 3),
+			ActiveDaysPct:       round(float64(stage.ActiveDays)/float64(cfg.HorizonDays), 3),
+			QueueVolatility:     round(stdDev(stage.QueueSamples), 2),
+			FlowEfficiency:      round(flowEfficiency, 3),
+			ThroughputPerDay:    round(throughputPerDay, 2),
+			ThroughputStdDev:    round(throughputStdDev, 2),
+			ThroughputCV:        round(throughputCV, 2),
+			ArrivalStdDev:       round(arrivalStdDev, 2),
+			ArrivalCV:           round(arrivalCV, 2),
+			NetFlowStdDev:       round(netFlowStdDev, 2),
+			NetFlowCV:           round(netFlowCV, 2),
+			CapacitySlack:       round(capacitySlack, 2),
+			CapacitySlackPct:    round(capacitySlackPct, 3),
+			IdleDays:            stage.IdleDays,
+			IdleDaysPct:         round(float64(stage.IdleDays)/float64(cfg.HorizonDays), 3),
+			StarvedDays:         stage.StarvedDays,
+			StarvedDaysPct:      round(float64(stage.StarvedDays)/float64(cfg.HorizonDays), 3),
+			BacklogDays:         round(backlogDays, 2),
+			BacklogBlocked:      backlogBlocked,
+			ArrivalsPerDay:      round(arrivalsPerDay, 2),
+			NetFlowPerDay:       round(netFlow, 2),
+			FlowBalance:         flowBalance,
+			QueuePeak:           stage.QueuePeak,
+			ActivePeak:          stage.ActivePeak,
+			WIPTrendSlope:       round(wipSlope, 3),
+			WIPTrendR2:          round(wipR2, 3),
+			WIPTrend:            wipTrend,
+			RecoveryThroughput:  round(recoveryThroughput, 2),
+			RecoveryGap:         round(recoveryGap, 2),
+			BacklogClearDays:    round(clearDays, 2),
+			BacklogClearBlocked: clearBlocked,
 		}
 		stageSummaries = append(stageSummaries, summary)
 		if summary.AverageQueue > topQueue.AverageQueue {
@@ -684,11 +825,24 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 	for _, stage := range stages {
 		score := float64(stage.OverdueWIP*3+stage.NearDueWIP*2) + maxFloat(stage.NetFlowPerDay, 0)*5
 		score += stage.BacklogDays + stage.Utilization*4 + stage.QueueVolatility*0.5
+		score += stage.RecoveryGap * 3
 		if stage.ThroughputCV >= 0.6 {
 			score += 2
 		}
+		if stage.ServiceTimeCV >= 0.6 {
+			score += 1
+		}
 		if stage.BacklogBlocked {
 			score += 10
+		}
+		if stage.BacklogClearBlocked {
+			score += 6
+		}
+		if stage.ProjectedLateMax > 0 {
+			score += 2
+			if stage.ProjectedLateMin > 0 {
+				score += 1
+			}
 		}
 		if stage.WIPTrend == "Increasing" {
 			score += 2
@@ -710,14 +864,29 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		if stage.BacklogBlocked {
 			signals = append(signals, "backlog_blocked")
 		}
+		if stage.BacklogClearBlocked {
+			signals = append(signals, "clearance_blocked")
+		}
+		if stage.ProjectedLateMax > 0 {
+			signals = append(signals, "projected_sla_late")
+		}
+		if stage.RecoveryGap >= 0.5 {
+			signals = append(signals, "recovery_gap")
+		}
 		if stage.Utilization >= 0.9 {
 			signals = append(signals, "high_utilization")
+		}
+		if stage.CapacitySlackPct <= 0.1 {
+			signals = append(signals, "low_capacity_slack")
 		}
 		if stage.QueueVolatility >= 3 {
 			signals = append(signals, "volatile_queue")
 		}
 		if stage.ThroughputCV >= 0.6 {
 			signals = append(signals, "volatile_throughput")
+		}
+		if stage.ServiceTimeCV >= 0.6 {
+			signals = append(signals, "volatile_service_time")
 		}
 		if stage.WIPTrend == "Increasing" {
 			signals = append(signals, "wip_trend_increasing")
@@ -730,7 +899,7 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		}
 
 		recommendation := "Monitor"
-		if stage.BacklogBlocked || stage.NetFlowPerDay > 0.5 {
+		if stage.BacklogBlocked || stage.BacklogClearBlocked || stage.RecoveryGap >= 0.5 || stage.NetFlowPerDay > 0.5 {
 			recommendation = "Increase capacity or reduce service time"
 		} else if stage.OverdueWIP > 0 {
 			recommendation = "Expedite overdue items"
@@ -756,12 +925,13 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 	return items
 }
 
-func computeStageAging(stage *StageState, horizonDays, nearWindow int) (float64, int, int, int) {
+func computeStageAging(stage *StageState, horizonDays, nearWindow int) (float64, int, int, int, int, int) {
 	totalAge := 0
 	count := 0
 	oldest := 0
 	overdue := 0
 	nearDue := 0
+	ages := make([]int, 0, len(stage.Queue)+len(stage.InProgress))
 	apps := append([]*Application{}, stage.Queue...)
 	apps = append(apps, stage.InProgress...)
 	for _, app := range apps {
@@ -769,6 +939,7 @@ func computeStageAging(stage *StageState, horizonDays, nearWindow int) (float64,
 		if age < 0 {
 			continue
 		}
+		ages = append(ages, age)
 		totalAge += age
 		count++
 		if age > oldest {
@@ -785,9 +956,60 @@ func computeStageAging(stage *StageState, horizonDays, nearWindow int) (float64,
 		}
 	}
 	if count == 0 {
-		return 0, oldest, overdue, nearDue
+		return 0, 0, 0, oldest, overdue, nearDue
 	}
-	return float64(totalAge) / float64(count), oldest, overdue, nearDue
+	percentiles := computePercentiles(ages, []int{50, 90})
+	return float64(totalAge) / float64(count), percentiles["p50"], percentiles["p90"], oldest, overdue, nearDue
+}
+
+func computeStageProjectedRisk(cfg Config, stage *StageState) (int, int, int) {
+	if cfg.TargetCycleDays == 0 {
+		return 0, 0, 0
+	}
+
+	wipTotal := 0
+	lateMin := 0
+	lateMax := 0
+	apps := make([]*Application, 0, len(stage.Queue)+len(stage.InProgress))
+	apps = append(apps, stage.Queue...)
+	apps = append(apps, stage.InProgress...)
+
+	for _, app := range apps {
+		wipTotal++
+		minRemain, maxRemain := remainingServiceDays(cfg.Stages, app)
+		if ageWithRemaining(cfg.HorizonDays, app.ArrivalDay, minRemain) > cfg.TargetCycleDays {
+			lateMin++
+		}
+		if ageWithRemaining(cfg.HorizonDays, app.ArrivalDay, maxRemain) > cfg.TargetCycleDays {
+			lateMax++
+		}
+	}
+
+	return wipTotal, lateMin, lateMax
+}
+
+func computeRecovery(throughputPerDay, arrivalsPerDay float64, wip int, maxDays int) (float64, float64, float64, bool) {
+	requiredThroughput := arrivalsPerDay
+	if maxDays > 0 && wip > 0 {
+		requiredThroughput += float64(wip) / float64(maxDays)
+	}
+	gap := requiredThroughput - throughputPerDay
+	if gap < 0 {
+		gap = 0
+	}
+
+	netDrain := throughputPerDay - arrivalsPerDay
+	clearBlocked := false
+	clearDays := 0.0
+	if wip > 0 {
+		if netDrain > 0 {
+			clearDays = float64(wip) / netDrain
+		} else {
+			clearBlocked = true
+		}
+	}
+
+	return requiredThroughput, gap, clearDays, clearBlocked
 }
 
 func arrivalsForDay(cfg Config, rng *rand.Rand) int {
@@ -1035,14 +1257,32 @@ func printReport(report Report) {
 	fmt.Println()
 	fmt.Println("Stage detail")
 	for _, stage := range report.StageSummaries {
-		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f | avg active %.2f | avg service %.2f days | svc p90 %d days | util %.2f | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | wip trend %s (slope %.2f, r2 %.2f) | avg age %.2f days | oldest %d days | stage max %d days",
+		clearance := fmt.Sprintf("%.2f days", stage.BacklogClearDays)
+		if stage.BacklogClearBlocked {
+			clearance = "blocked"
+		}
+		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f (p50 %d, p90 %d) | avg active %.2f (p50 %d, p90 %d) | avg service %.2f days | svc p90 %d days | svc std dev %.2f | svc cv %.2f | stage cycle avg %.2f days (p50 %d, p90 %d) | stage cycle std dev %.2f | stage cycle cv %.2f | stage on-time %.1f%% | util %.2f | slack %.2f/day (%.3f) | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | wip trend %s (slope %.2f, r2 %.2f) | avg age %.2f days (p50 %d, p90 %d) | oldest %d days | stage max %d days | idle %d days (%.3f) | starved %d days (%.3f) | backlog days %.2f | recovery gap %.2f/day | clear %s",
 			stage.Name,
 			stage.Capacity,
 			stage.AverageQueue,
+			stage.QueueP50,
+			stage.QueueP90,
 			stage.AverageActive,
+			stage.ActiveP50,
+			stage.ActiveP90,
 			stage.AverageServiceDays,
 			stage.ServiceTimeP90,
+			stage.ServiceTimeStdDev,
+			stage.ServiceTimeCV,
+			stage.StageCycleAvg,
+			stage.StageCycleP50,
+			stage.StageCycleP90,
+			stage.StageCycleStdDev,
+			stage.StageCycleCV,
+			stage.StageOnTimeRate*100,
 			stage.Utilization,
+			stage.CapacitySlack,
+			stage.CapacitySlackPct,
 			stage.EstimatedWaitDays,
 			stage.Pressure,
 			stage.ThroughputPerDay,
@@ -1054,8 +1294,17 @@ func printReport(report Report) {
 			stage.WIPTrendSlope,
 			stage.WIPTrendR2,
 			stage.AverageAgeDays,
+			stage.AgeP50,
+			stage.AgeP90,
 			stage.OldestAgeDays,
 			stage.MaxDays,
+			stage.IdleDays,
+			stage.IdleDaysPct,
+			stage.StarvedDays,
+			stage.StarvedDaysPct,
+			stage.BacklogDays,
+			stage.RecoveryGap,
+			clearance,
 		)
 		line = fmt.Sprintf("%s | overdue %d | near due %d", line, stage.OverdueWIP, stage.NearDueWIP)
 		fmt.Println(line)
@@ -1063,6 +1312,475 @@ func printReport(report Report) {
 	fmt.Println()
 	fmt.Printf("Backlog highlight: avg queue leader = %s, top WIP = %s\n",
 		report.BacklogHighlights.TopAverageQueue, report.BacklogHighlights.TopWIP)
+}
+
+func openDB() (*sql.DB, error) {
+	url := os.Getenv("GS_REVIEW_LATENCY_DB_URL")
+	if url == "" {
+		url = os.Getenv("DATABASE_URL")
+	}
+	if url == "" {
+		return nil, errors.New("database URL not set (GS_REVIEW_LATENCY_DB_URL or DATABASE_URL)")
+	}
+
+	db, err := sql.Open("pgx", url)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func initializeDatabase(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stmts := []string{
+		`create schema if not exists review_latency_lab`,
+		`create table if not exists review_latency_lab.simulation_runs (
+			id bigserial primary key,
+			run_at timestamptz not null default now(),
+			seed bigint not null,
+			horizon_days int not null,
+			arrival_rate_per_day int not null,
+			arrival_mode text not null,
+			target_cycle_days int not null,
+			near_due_window_days int not null,
+			stage_near_due_window_days int not null,
+			total_arrivals int not null,
+			average_arrivals numeric(10,2) not null,
+			arrival_std_dev numeric(10,2) not null,
+			arrival_cv numeric(10,2) not null,
+			total_completed int not null,
+			completion_rate numeric(10,3) not null,
+			average_cycle_days numeric(10,2) not null,
+			percentile_p50 int not null,
+			percentile_p90 int not null,
+			percentile_p95 int not null,
+			wip_total int not null,
+			on_time_rate numeric(10,3) not null,
+			overdue_completed int not null,
+			overdue_wip int not null,
+			near_due_wip int not null,
+			projected_late_min int not null,
+			projected_late_max int not null,
+			projected_wip_total int not null,
+			constraint_stage text not null,
+			constraint_gap numeric(10,2) not null,
+			constraint_utilization numeric(10,2) not null,
+			constraint_avg_queue numeric(10,2) not null,
+			constraint_recommendation text not null,
+			action_stage text not null,
+			action_score numeric(10,2) not null,
+			action_signals text not null,
+			action_recommendation text not null,
+			flow_growing int not null,
+			flow_stable int not null,
+			flow_draining int not null,
+			top_growth_stage text not null,
+			top_drain_stage text not null,
+			source text not null
+		)`,
+		`create table if not exists review_latency_lab.stage_summaries (
+			id bigserial primary key,
+			run_id bigint not null references review_latency_lab.simulation_runs(id) on delete cascade,
+			name text not null,
+			capacity_per_day int not null,
+			max_days int not null,
+			average_queue numeric(10,2) not null,
+			queue_p50 int not null,
+			queue_p90 int not null,
+			average_active numeric(10,2) not null,
+			active_p50 int not null,
+			active_p90 int not null,
+			average_service_days numeric(10,2) not null,
+			service_time_p90 int not null,
+			service_time_std_dev numeric(10,2) not null,
+			service_time_cv numeric(10,2) not null,
+			stage_cycle_avg numeric(10,2) not null,
+			stage_cycle_p50 int not null,
+			stage_cycle_p90 int not null,
+			stage_cycle_std_dev numeric(10,2) not null,
+			stage_cycle_cv numeric(10,2) not null,
+			stage_on_time_rate numeric(10,3) not null,
+			stage_over_max int not null,
+			utilization numeric(10,2) not null,
+			estimated_wait_days numeric(10,2) not null,
+			pressure text not null,
+			wip int not null,
+			average_age_days numeric(10,2) not null,
+			age_p50 int not null,
+			age_p90 int not null,
+			oldest_age_days int not null,
+			overdue_wip int not null,
+			near_due_wip int not null,
+			queue_days_pct numeric(10,3) not null,
+			active_days_pct numeric(10,3) not null,
+			queue_volatility numeric(10,2) not null,
+			flow_efficiency numeric(10,3) not null,
+			throughput_per_day numeric(10,2) not null,
+			throughput_std_dev numeric(10,2) not null,
+			throughput_cv numeric(10,2) not null,
+			arrival_std_dev numeric(10,2) not null,
+			arrival_cv numeric(10,2) not null,
+			net_flow_std_dev numeric(10,2) not null,
+			net_flow_cv numeric(10,2) not null,
+			capacity_slack_per_day numeric(10,2) not null,
+			capacity_slack_pct numeric(10,3) not null,
+			idle_days int not null,
+			idle_days_pct numeric(10,3) not null,
+			starved_days int not null,
+			starved_days_pct numeric(10,3) not null,
+			backlog_days numeric(10,2) not null,
+			backlog_blocked boolean not null,
+			recovery_throughput_per_day numeric(10,2) not null,
+			recovery_gap_per_day numeric(10,2) not null,
+			backlog_clearance_days numeric(10,2) not null,
+			backlog_clearance_blocked boolean not null,
+			arrivals_per_day numeric(10,2) not null,
+			net_flow_per_day numeric(10,2) not null,
+			flow_balance text not null,
+			queue_peak int not null,
+			active_peak int not null,
+			wip_trend_slope numeric(10,3) not null,
+			wip_trend_r2 numeric(10,3) not null,
+			wip_trend text not null
+		)`,
+		`alter table review_latency_lab.stage_summaries add column if not exists queue_p50 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists queue_p90 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists active_p50 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists active_p90 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists age_p50 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists age_p90 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists service_time_std_dev numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists service_time_cv numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_cycle_avg numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_cycle_p50 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_cycle_p90 int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_cycle_std_dev numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_cycle_cv numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_on_time_rate numeric(10,3) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists stage_over_max int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists service_time_std_dev numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists service_time_cv numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists capacity_slack_per_day numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists capacity_slack_pct numeric(10,3) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists recovery_throughput_per_day numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists recovery_gap_per_day numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists backlog_clearance_days numeric(10,2) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists backlog_clearance_blocked boolean not null default false`,
+		`alter table review_latency_lab.stage_summaries add column if not exists idle_days int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists idle_days_pct numeric(10,3) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists starved_days int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists starved_days_pct numeric(10,3) not null default 0`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedDatabaseIfEmpty(db *sql.DB, cfg Config, seed int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int
+	if err := db.QueryRowContext(ctx, `select count(*) from review_latency_lab.simulation_runs`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	baseSeed := seed
+	if baseSeed == 0 {
+		baseSeed = time.Now().UnixNano()
+	}
+	seeds := []int64{baseSeed, baseSeed + 11, baseSeed + 42}
+	for _, s := range seeds {
+		rng := rand.New(rand.NewSource(s))
+		report := simulate(cfg, rng)
+		if err := storeSimulationRun(db, cfg, report, s, "seed"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func storeSimulationRun(db *sql.DB, cfg Config, report Report, seed int64, source string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	actionStage := ""
+	actionScore := 0.0
+	actionSignals := ""
+	actionRecommendation := ""
+	if len(report.ActionQueue) > 0 {
+		actionStage = report.ActionQueue[0].Stage
+		actionScore = report.ActionQueue[0].Score
+		actionSignals = strings.Join(report.ActionQueue[0].Signals, ",")
+		actionRecommendation = report.ActionQueue[0].Recommendation
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var runID int64
+	err = tx.QueryRowContext(ctx, `
+		insert into review_latency_lab.simulation_runs (
+			seed,
+			horizon_days,
+			arrival_rate_per_day,
+			arrival_mode,
+			target_cycle_days,
+			near_due_window_days,
+			stage_near_due_window_days,
+			total_arrivals,
+			average_arrivals,
+			arrival_std_dev,
+			arrival_cv,
+			total_completed,
+			completion_rate,
+			average_cycle_days,
+			percentile_p50,
+			percentile_p90,
+			percentile_p95,
+			wip_total,
+			on_time_rate,
+			overdue_completed,
+			overdue_wip,
+			near_due_wip,
+			projected_late_min,
+			projected_late_max,
+			projected_wip_total,
+			constraint_stage,
+			constraint_gap,
+			constraint_utilization,
+			constraint_avg_queue,
+			constraint_recommendation,
+			action_stage,
+			action_score,
+			action_signals,
+			action_recommendation,
+			flow_growing,
+			flow_stable,
+			flow_draining,
+			top_growth_stage,
+			top_drain_stage,
+			source
+		) values (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
+		) returning id
+	`,
+		seed,
+		cfg.HorizonDays,
+		cfg.ArrivalRatePerDay,
+		cfg.ArrivalMode,
+		cfg.TargetCycleDays,
+		cfg.NearDueWindowDays,
+		cfg.StageNearDueDays,
+		report.TotalArrivals,
+		report.AverageArrivals,
+		report.ArrivalStdDev,
+		report.ArrivalCV,
+		report.TotalCompleted,
+		report.CompletionRate,
+		report.AverageCycleDays,
+		report.Percentiles["p50"],
+		report.Percentiles["p90"],
+		report.Percentiles["p95"],
+		report.WIPTotal,
+		report.RiskSummary.OnTimeRate,
+		report.RiskSummary.OverdueCompleted,
+		report.RiskSummary.OverdueWIP,
+		report.RiskSummary.NearDueWIP,
+		report.RiskSummary.ProjectedLateMin,
+		report.RiskSummary.ProjectedLateMax,
+		report.RiskSummary.ProjectedWIPTotal,
+		report.ConstraintSummary.Stage,
+		report.ConstraintSummary.ThroughputGap,
+		report.ConstraintSummary.Utilization,
+		report.ConstraintSummary.AverageQueue,
+		report.ConstraintSummary.Recommendation,
+		actionStage,
+		actionScore,
+		actionSignals,
+		actionRecommendation,
+		report.FlowSummary.Growing,
+		report.FlowSummary.Stable,
+		report.FlowSummary.Draining,
+		report.FlowSummary.TopGrowthStage,
+		report.FlowSummary.TopDrainStage,
+		source,
+	).Scan(&runID)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `
+		insert into review_latency_lab.stage_summaries (
+			run_id,
+			name,
+			capacity_per_day,
+			max_days,
+			average_queue,
+			queue_p50,
+			queue_p90,
+			average_active,
+			active_p50,
+			active_p90,
+			average_service_days,
+			service_time_p90,
+			service_time_std_dev,
+			service_time_cv,
+			stage_cycle_avg,
+			stage_cycle_p50,
+			stage_cycle_p90,
+			stage_cycle_std_dev,
+			stage_cycle_cv,
+			stage_on_time_rate,
+			stage_over_max,
+			utilization,
+			estimated_wait_days,
+			pressure,
+			wip,
+			average_age_days,
+			age_p50,
+			age_p90,
+			oldest_age_days,
+			overdue_wip,
+			near_due_wip,
+			queue_days_pct,
+			active_days_pct,
+			queue_volatility,
+			flow_efficiency,
+			throughput_per_day,
+			throughput_std_dev,
+			throughput_cv,
+			arrival_std_dev,
+			arrival_cv,
+			net_flow_std_dev,
+			net_flow_cv,
+			capacity_slack_per_day,
+			capacity_slack_pct,
+			idle_days,
+			idle_days_pct,
+			starved_days,
+			starved_days_pct,
+			backlog_days,
+			backlog_blocked,
+			recovery_throughput_per_day,
+			recovery_gap_per_day,
+			backlog_clearance_days,
+			backlog_clearance_blocked,
+			arrivals_per_day,
+			net_flow_per_day,
+			flow_balance,
+			queue_peak,
+			active_peak,
+			wip_trend_slope,
+			wip_trend_r2,
+			wip_trend
+		) values (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62
+		)
+	`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	for _, stage := range report.StageSummaries {
+		if _, err := stmt.ExecContext(ctx,
+			runID,
+			stage.Name,
+			stage.Capacity,
+			stage.MaxDays,
+			stage.AverageQueue,
+			stage.QueueP50,
+			stage.QueueP90,
+			stage.AverageActive,
+			stage.ActiveP50,
+			stage.ActiveP90,
+			stage.AverageServiceDays,
+			stage.ServiceTimeP90,
+			stage.ServiceTimeStdDev,
+			stage.ServiceTimeCV,
+			stage.StageCycleAvg,
+			stage.StageCycleP50,
+			stage.StageCycleP90,
+			stage.StageCycleStdDev,
+			stage.StageCycleCV,
+			stage.StageOnTimeRate,
+			stage.StageOverMax,
+			stage.Utilization,
+			stage.EstimatedWaitDays,
+			stage.Pressure,
+			stage.WIP,
+			stage.AverageAgeDays,
+			stage.AgeP50,
+			stage.AgeP90,
+			stage.OldestAgeDays,
+			stage.OverdueWIP,
+			stage.NearDueWIP,
+			stage.QueueDaysPct,
+			stage.ActiveDaysPct,
+			stage.QueueVolatility,
+			stage.FlowEfficiency,
+			stage.ThroughputPerDay,
+			stage.ThroughputStdDev,
+			stage.ThroughputCV,
+			stage.ArrivalStdDev,
+			stage.ArrivalCV,
+			stage.NetFlowStdDev,
+			stage.NetFlowCV,
+			stage.CapacitySlack,
+			stage.CapacitySlackPct,
+			stage.IdleDays,
+			stage.IdleDaysPct,
+			stage.StarvedDays,
+			stage.StarvedDaysPct,
+			stage.BacklogDays,
+			stage.BacklogBlocked,
+			stage.RecoveryThroughput,
+			stage.RecoveryGap,
+			stage.BacklogClearDays,
+			stage.BacklogClearBlocked,
+			stage.ArrivalsPerDay,
+			stage.NetFlowPerDay,
+			stage.FlowBalance,
+			stage.QueuePeak,
+			stage.ActivePeak,
+			stage.WIPTrendSlope,
+			stage.WIPTrendR2,
+			stage.WIPTrend,
+		); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func fatal(err error) {
