@@ -66,6 +66,8 @@ type StageState struct {
 	ActiveDays        int
 	IdleDays          int
 	StarvedDays       int
+	CapacityHitDays   int
+	BlockedDays       int
 	QueuePeak         int
 	ActivePeak        int
 	QueueSamples      []int
@@ -124,6 +126,7 @@ type StageSummary struct {
 	OldestAgeDays       int     `json:"oldest_age_days"`
 	OverdueWIP          int     `json:"overdue_wip"`
 	NearDueWIP          int     `json:"near_due_wip"`
+	DueRiskRate         float64 `json:"due_risk_rate"`
 	ProjectedWIP        int     `json:"projected_wip_total"`
 	ProjectedLateMin    int     `json:"projected_late_min"`
 	ProjectedLateMax    int     `json:"projected_late_max"`
@@ -144,6 +147,10 @@ type StageSummary struct {
 	IdleDaysPct         float64 `json:"idle_days_pct"`
 	StarvedDays         int     `json:"starved_days"`
 	StarvedDaysPct      float64 `json:"starved_days_pct"`
+	CapacityHitDays     int     `json:"capacity_hit_days"`
+	CapacityHitPct      float64 `json:"capacity_hit_pct"`
+	BlockedDays         int     `json:"blocked_days"`
+	BlockedDaysPct      float64 `json:"blocked_days_pct"`
 	RecoveryThroughput  float64 `json:"recovery_throughput_per_day"`
 	RecoveryGap         float64 `json:"recovery_gap_per_day"`
 	BacklogDays         float64 `json:"backlog_days"`
@@ -448,6 +455,12 @@ func simulate(cfg Config, rng *rand.Rand) Report {
 			if len(stage.Queue) > 0 && len(stage.InProgress) == 0 {
 				stage.StarvedDays++
 			}
+			if stage.Config.CapacityPerDay > 0 && len(stage.InProgress) >= stage.Config.CapacityPerDay {
+				stage.CapacityHitDays++
+				if len(stage.Queue) > 0 {
+					stage.BlockedDays++
+				}
+			}
 			if len(stage.Queue) > stage.QueuePeak {
 				stage.QueuePeak = len(stage.Queue)
 			}
@@ -557,6 +570,10 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 		wip := len(stage.Queue) + len(stage.InProgress)
 		wipTotal += wip
 		avgAge, ageP50, ageP90, oldestAge, overdueWIP, nearDueWIP := computeStageAging(stage, cfg.HorizonDays, cfg.StageNearDueDays)
+		dueRiskRate := 0.0
+		if wip > 0 {
+			dueRiskRate = float64(overdueWIP+nearDueWIP) / float64(wip)
+		}
 		projectedWIP, projectedLateMin, projectedLateMax := computeStageProjectedRisk(cfg, stage)
 		flowEfficiency := 0.0
 		if avgQueue+avgActive > 0 {
@@ -604,6 +621,12 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			backlogScore = math.Inf(1)
 		}
 		recoveryThroughput, recoveryGap, clearDays, clearBlocked := computeRecovery(throughputPerDay, arrivalsPerDay, wip, stage.Config.MaxDays)
+		capacityHitPct := 0.0
+		blockedPct := 0.0
+		if cfg.HorizonDays > 0 {
+			capacityHitPct = float64(stage.CapacityHitDays) / float64(cfg.HorizonDays)
+			blockedPct = float64(stage.BlockedDays) / float64(cfg.HorizonDays)
+		}
 		summary := StageSummary{
 			Name:                stage.Config.Name,
 			Capacity:            stage.Config.CapacityPerDay,
@@ -635,6 +658,7 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			OldestAgeDays:       oldestAge,
 			OverdueWIP:          overdueWIP,
 			NearDueWIP:          nearDueWIP,
+			DueRiskRate:         round(dueRiskRate, 3),
 			ProjectedWIP:        projectedWIP,
 			ProjectedLateMin:    projectedLateMin,
 			ProjectedLateMax:    projectedLateMax,
@@ -655,6 +679,10 @@ func buildReport(cfg Config, stages []*StageState, completed []int, totalArrival
 			IdleDaysPct:         round(float64(stage.IdleDays)/float64(cfg.HorizonDays), 3),
 			StarvedDays:         stage.StarvedDays,
 			StarvedDaysPct:      round(float64(stage.StarvedDays)/float64(cfg.HorizonDays), 3),
+			CapacityHitDays:     stage.CapacityHitDays,
+			CapacityHitPct:      round(capacityHitPct, 3),
+			BlockedDays:         stage.BlockedDays,
+			BlockedDaysPct:      round(blockedPct, 3),
 			BacklogDays:         round(backlogDays, 2),
 			BacklogBlocked:      backlogBlocked,
 			ArrivalsPerDay:      round(arrivalsPerDay, 2),
@@ -825,6 +853,7 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 	for _, stage := range stages {
 		score := float64(stage.OverdueWIP*3+stage.NearDueWIP*2) + maxFloat(stage.NetFlowPerDay, 0)*5
 		score += stage.BacklogDays + stage.Utilization*4 + stage.QueueVolatility*0.5
+		score += stage.DueRiskRate * 5
 		score += stage.RecoveryGap * 3
 		if stage.ThroughputCV >= 0.6 {
 			score += 2
@@ -837,6 +866,12 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		}
 		if stage.BacklogClearBlocked {
 			score += 6
+		}
+		if stage.CapacityHitPct >= 0.6 {
+			score += 2
+		}
+		if stage.BlockedDaysPct >= 0.3 {
+			score += 2
 		}
 		if stage.ProjectedLateMax > 0 {
 			score += 2
@@ -870,11 +905,20 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		if stage.ProjectedLateMax > 0 {
 			signals = append(signals, "projected_sla_late")
 		}
+		if stage.DueRiskRate >= 0.4 {
+			signals = append(signals, "high_due_risk")
+		}
 		if stage.RecoveryGap >= 0.5 {
 			signals = append(signals, "recovery_gap")
 		}
 		if stage.Utilization >= 0.9 {
 			signals = append(signals, "high_utilization")
+		}
+		if stage.CapacityHitPct >= 0.6 {
+			signals = append(signals, "capacity_saturated")
+		}
+		if stage.BlockedDaysPct >= 0.3 {
+			signals = append(signals, "blocked_days_high")
 		}
 		if stage.CapacitySlackPct <= 0.1 {
 			signals = append(signals, "low_capacity_slack")
@@ -899,7 +943,7 @@ func buildActionQueue(stages []StageSummary) []ActionItem {
 		}
 
 		recommendation := "Monitor"
-		if stage.BacklogBlocked || stage.BacklogClearBlocked || stage.RecoveryGap >= 0.5 || stage.NetFlowPerDay > 0.5 {
+		if stage.BacklogBlocked || stage.BacklogClearBlocked || stage.RecoveryGap >= 0.5 || stage.NetFlowPerDay > 0.5 || stage.BlockedDaysPct >= 0.3 || stage.CapacityHitPct >= 0.6 {
 			recommendation = "Increase capacity or reduce service time"
 		} else if stage.OverdueWIP > 0 {
 			recommendation = "Expedite overdue items"
@@ -1261,7 +1305,7 @@ func printReport(report Report) {
 		if stage.BacklogClearBlocked {
 			clearance = "blocked"
 		}
-		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f (p50 %d, p90 %d) | avg active %.2f (p50 %d, p90 %d) | avg service %.2f days | svc p90 %d days | svc std dev %.2f | svc cv %.2f | stage cycle avg %.2f days (p50 %d, p90 %d) | stage cycle std dev %.2f | stage cycle cv %.2f | stage on-time %.1f%% | util %.2f | slack %.2f/day (%.3f) | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | wip trend %s (slope %.2f, r2 %.2f) | avg age %.2f days (p50 %d, p90 %d) | oldest %d days | stage max %d days | idle %d days (%.3f) | starved %d days (%.3f) | backlog days %.2f | recovery gap %.2f/day | clear %s",
+		line := fmt.Sprintf("- %s | cap %d/day | avg queue %.2f (p50 %d, p90 %d) | avg active %.2f (p50 %d, p90 %d) | avg service %.2f days | svc p90 %d days | svc std dev %.2f | svc cv %.2f | stage cycle avg %.2f days (p50 %d, p90 %d) | stage cycle std dev %.2f | stage cycle cv %.2f | stage on-time %.1f%% | util %.2f | slack %.2f/day (%.3f) | est wait %.2f days | pressure %s | throughput %.2f/day | throughput cv %.2f | arrival cv %.2f | net flow cv %.2f | wip %d | wip trend %s (slope %.2f, r2 %.2f) | avg age %.2f days (p50 %d, p90 %d) | oldest %d days | stage max %d days | idle %d days (%.3f) | starved %d days (%.3f) | capacity hit %d days (%.3f) | blocked %d days (%.3f) | backlog days %.2f | recovery gap %.2f/day | clear %s",
 			stage.Name,
 			stage.Capacity,
 			stage.AverageQueue,
@@ -1302,11 +1346,15 @@ func printReport(report Report) {
 			stage.IdleDaysPct,
 			stage.StarvedDays,
 			stage.StarvedDaysPct,
+			stage.CapacityHitDays,
+			stage.CapacityHitPct,
+			stage.BlockedDays,
+			stage.BlockedDaysPct,
 			stage.BacklogDays,
 			stage.RecoveryGap,
 			clearance,
 		)
-		line = fmt.Sprintf("%s | overdue %d | near due %d", line, stage.OverdueWIP, stage.NearDueWIP)
+		line = fmt.Sprintf("%s | overdue %d | near due %d | due risk %.1f%%", line, stage.OverdueWIP, stage.NearDueWIP, stage.DueRiskRate*100)
 		fmt.Println(line)
 	}
 	fmt.Println()
@@ -1436,6 +1484,10 @@ func initializeDatabase(db *sql.DB) error {
 			idle_days_pct numeric(10,3) not null,
 			starved_days int not null,
 			starved_days_pct numeric(10,3) not null,
+			capacity_hit_days int not null,
+			capacity_hit_pct numeric(10,3) not null,
+			blocked_days int not null,
+			blocked_days_pct numeric(10,3) not null,
 			backlog_days numeric(10,2) not null,
 			backlog_blocked boolean not null,
 			recovery_throughput_per_day numeric(10,2) not null,
@@ -1478,6 +1530,10 @@ func initializeDatabase(db *sql.DB) error {
 		`alter table review_latency_lab.stage_summaries add column if not exists idle_days_pct numeric(10,3) not null default 0`,
 		`alter table review_latency_lab.stage_summaries add column if not exists starved_days int not null default 0`,
 		`alter table review_latency_lab.stage_summaries add column if not exists starved_days_pct numeric(10,3) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists capacity_hit_days int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists capacity_hit_pct numeric(10,3) not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists blocked_days int not null default 0`,
+		`alter table review_latency_lab.stage_summaries add column if not exists blocked_days_pct numeric(10,3) not null default 0`,
 	}
 
 	for _, stmt := range stmts {
@@ -1683,6 +1739,10 @@ func storeSimulationRun(db *sql.DB, cfg Config, report Report, seed int64, sourc
 			idle_days_pct,
 			starved_days,
 			starved_days_pct,
+			capacity_hit_days,
+			capacity_hit_pct,
+			blocked_days,
+			blocked_days_pct,
 			backlog_days,
 			backlog_blocked,
 			recovery_throughput_per_day,

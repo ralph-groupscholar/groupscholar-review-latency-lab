@@ -74,6 +74,11 @@
 - Added schema migrations for service-time variability columns to keep existing databases consistent.
 - Updated stage summary inserts to persist recovery throughput and clearance signals.
 
+## Iteration 101
+- Added stage cycle-time variability metrics (std dev and CV) to summaries, JSON/text output, and Postgres storage.
+- Added schema migrations and storage updates for stage cycle-time variability fields.
+- Added tests covering stage cycle-time variability calculations and updated README feature list.
+
 ## Iteration 103
 - Added capacity slack per day and slack percent metrics to stage summaries and action signals.
 - Extended text/JSON reports and Postgres storage to persist capacity slack fields.

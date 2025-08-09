@@ -118,6 +118,37 @@ func TestStageCycleSummary(t *testing.T) {
 	}
 }
 
+func TestStageCycleVariability(t *testing.T) {
+	cfg := Config{
+		HorizonDays:       3,
+		ArrivalRatePerDay: 0,
+		ArrivalMode:       "fixed",
+		StageNearDueDays:  1,
+		Stages: []StageConfig{
+			{Name: "Review", CapacityPerDay: 1, MinDays: 1, MaxDays: 3},
+		},
+	}
+	stage := &StageState{
+		Config:            cfg.Stages[0],
+		QueueSamples:      []int{0, 0, 0},
+		ActiveSamples:     []int{0, 0, 0},
+		ArrivalDaily:      []int{0, 0, 0},
+		CompletedDaily:    []int{0, 0, 0},
+		StageCycleSum:     12,
+		StageCycleSamples: 3,
+		StageCycleTimes:   []int{2, 4, 6},
+	}
+
+	report := buildReport(cfg, []*StageState{stage}, []int{}, 0, []*Application{})
+	summary := report.StageSummaries[0]
+	if summary.StageCycleStdDev < 1.62 || summary.StageCycleStdDev > 1.64 {
+		t.Fatalf("expected stage cycle std dev near 1.63, got %.2f", summary.StageCycleStdDev)
+	}
+	if summary.StageCycleCV < 0.40 || summary.StageCycleCV > 0.42 {
+		t.Fatalf("expected stage cycle CV near 0.41, got %.2f", summary.StageCycleCV)
+	}
+}
+
 func TestServiceTimeVariability(t *testing.T) {
 	cfg := Config{
 		HorizonDays:       3,

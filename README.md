@@ -14,7 +14,7 @@ A local-first simulation CLI for exploring scholarship application review throug
 - Flow balance summary that counts growing/stable/draining stages plus top growth/drain stages
 - Action queue for the top three stages needing attention
 - Stage service-time averages, p90s, std dev, and CV plus throughput volatility to gauge processing variability
-- Stage cycle-time averages, percentiles, and on-time rate to flag SLA erosion
+- Stage cycle-time averages, percentiles, std dev, and CV plus on-time rate to flag SLA erosion
 - Queue and active WIP percentiles (p50/p90) to quantify typical vs. worst-case stage load
 - Arrival and net-flow volatility (CV) to show demand swings and backlog instability
 - WIP trend regression (slope and fit) to flag persistent backlog growth or decline
